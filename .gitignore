@@ -1,0 +1,30 @@
+data/
+.idea/
+__pycache__
+.vscode/
+carla-autoware
+carla
+# Ignore train directory
+train/
+
+# Python-specific ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Virtual environment
+env/
+venv/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Dataset and model files (if applicable)
+*.h5
+*.ckpt
+*.pth
