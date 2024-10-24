@@ -27,6 +27,7 @@ MAX_DIST = 150
 BEHAVIOR = 1
 AUTOWARE = 2
 AUTOWARE_UNIVERSE = 3
+REPLAY = 4
 OTHER = 9
 
 TARGET_SPEED = 60
@@ -54,7 +55,7 @@ IMMOBILE = 2
 STOP = 3
 EGO = 4
 NAVTYPE_LIST = [BEHAVIOR_AGENT, IMMOBILE, STOP]
-NAVTYPE_NAMES = [ "behavior_agent", "immobile", "stop"]
+NAVTYPE_NAMES = ["behavior_agent", "immobile", "stop"]
 
 # NPC Attributes
 VEHICLE_MAX_SPEED = 30  # multiplied with forward vector
@@ -110,7 +111,6 @@ CONGESTION = 1
 ENTROPY = 2
 INSTABILITY = 3
 TRAJECTORY = 4
-
 
 # Misc
 DEVNULL = "2> /dev/null"

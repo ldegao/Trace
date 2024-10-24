@@ -48,9 +48,10 @@ username = os.getenv("USER")
 docker_client = docker.from_env()
 
 
-def record_min_distance(npc_vehicles, player_loc, state):
+def record_closest_cars(npc_vehicles, player_loc, state):
+    # record min_dist
     min_dist = state.min_dist
-    closest_car = None
+    state.closest_cars_list = []
     for npc_vehicle in npc_vehicles:
         distance = npc_vehicle.get_location().distance(player_loc)
         if distance < min_dist:
@@ -58,7 +59,9 @@ def record_min_distance(npc_vehicles, player_loc, state):
             closest_car = npc_vehicle
     if min_dist < state.min_dist:
         state.min_dist = min_dist
-        state.closest_car = closest_car
+        state.closest_cars_list = closest_car
+    # todo:record closest_cars shot by top camera
+
 
 
 def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
@@ -81,8 +84,6 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
     sensors = []
     npc_vehicles = []
     npc_walkers = []
-    trace_graph = []
-    trace_graph_important = []
     nearby_dict = []
 
     # for autoware
@@ -181,10 +182,11 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                                                                                   exec_state.proc_state, retval,
                                                                                   s_started, sensors, speed, state,
                                                                                   world)
-                # record the min distance between every two npcs
-                record_min_distance(npc_vehicles, player_loc, state)
+                # record the closest cars and dangerous score every timestep
+                record_closest_cars(npc_vehicles, player_loc, state)
                 # mark useless vehicles for any frame
-                mark_useless_npc(npc_now, conf, player_lane_id, player_loc, player_rot, player_road_id, exec_state.G, town_map)
+                mark_useless_npc(npc_now, conf, player_lane_id, player_loc, player_rot, player_road_id, exec_state.G,
+                                 town_map)
 
                 # add old vehicles for any frame
                 found_frame = add_old_npc(npc_list, npc_vehicles, npc_now, agents_now, conf,
@@ -225,11 +227,10 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                     wait_until_end += 1
                 if wait_until_end > 6:
                     break
-            # find the biggest weight of npc-list
-            nearby_dict, trace_graph_important = record_trace(npc_vehicles, exec_state, player, player_loc, state,
-                                                              town_map, trace_dict,
-                                                              trace_graph, trace_graph_important)
-            state.trace_graph_important = trace_graph_important
+            # # find the biggest weight of npc-list
+            # nearby_dict, trace_graph_important = record_trace(npc_vehicles, exec_state, player, player_loc, state,
+            #                                                   town_map, trace_dict,
+            #                                                   trace_graph, trace_graph_important)
             state.nearby_dict = nearby_dict
         except KeyboardInterrupt:
             print("quitting")
@@ -254,6 +255,8 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
 
         all_time = time.time() - time_start
         FPS = all_frame / all_time
+        if FPS == 0:
+            FPS = 24
         valid_time = valid_frames / FPS
         logging.info("crashed:%s", state.crashed)
         logging.info("nearby_car:%s", len(nearby_dict))
@@ -353,8 +356,8 @@ def record_trace(npc_vehicles, exec_state, player, player_loc, state, town_map, 
             trace_graph_important.append(trace_dict[state.collision_to])
     else:
         # todo:better
-        # if state.closest_car:
-        #     trace_graph_important.append(trace_dict[state.closest_car])
+        # if state.closest_cars_list:
+        #     trace_graph_important.append(trace_dict[state.closest_cars_list])
         for trace in trace_dict:
             trace_graph_important.append(trace_dict[trace])
             break
@@ -467,9 +470,9 @@ def add_new_car(npc_list, npc_vehicles, npc_now, add_car_frame, agents_now, auto
                 if repeat_times > 100 or state.stuck_duration > 100:
                     # add a fake npc
                     new_npc = NPC(npc_type=None,
-                                    spawn_point=None, speed=None,
-                                    npc_id=len(npc_list),
-                                    ego_loc=player_loc)
+                                  spawn_point=None, speed=None,
+                                  npc_id=len(npc_list),
+                                  ego_loc=player_loc)
                     new_npc.instance = None
                     npc_list.append(new_npc)
                     new_npc.fresh = False
@@ -536,17 +539,17 @@ def add_new_car(npc_list, npc_vehicles, npc_now, add_car_frame, agents_now, auto
                     # add a immobile car
                     bg_speed = 0
                     new_npc = NPC(npc_type=c.VEHICLE,
-                                    spawn_point=npc_spawn_point, speed=bg_speed,
-                                    npc_id=len(npc_list),
-                                    ego_loc=player_loc,
-                                    npc_bp=npc_bp, spawn_stuck_frame=state.stuck_duration)
+                                  spawn_point=npc_spawn_point, speed=bg_speed,
+                                  npc_id=len(npc_list),
+                                  ego_loc=player_loc,
+                                  npc_bp=npc_bp, spawn_stuck_frame=state.stuck_duration)
                 else:
                     bg_speed = random.uniform(0 / 3.6, 20 / 3.6)
                     new_npc = NPC(npc_type=c.VEHICLE,
-                                    spawn_point=npc_spawn_point, speed=bg_speed,
-                                    npc_id=len(npc_list),
-                                    ego_loc=player_loc,
-                                    npc_bp=npc_bp, spawn_stuck_frame=state.stuck_duration)
+                                  spawn_point=npc_spawn_point, speed=bg_speed,
+                                  npc_id=len(npc_list),
+                                  ego_loc=player_loc,
+                                  npc_bp=npc_bp, spawn_stuck_frame=state.stuck_duration)
                 # do safe check
                 flag = True
                 for npc in npc_now:
@@ -822,7 +825,7 @@ def save_jpg_for_gpt(interval):
 
 
 def save_behavior_video(carla_error, state):
-    # # remove jpg files
+    # remove jpg files
     max_frames = c.FRAME_RATE * c.VIDEO_TIME
     if state.crashed and not state.laneinvaded:
         print(f"Saving front camera video for last {c.VIDEO_TIME} second", end=" ")
@@ -1063,6 +1066,7 @@ def ego_initialize(agents_now, exec_state, blueprint_library, conf, player_bp, s
         print("\n    [*] found [{}] at {}".format(player.id,
                                                   player.get_location()))
         timeout = 120
+        timeout = 9999
         try:
             left = signal.alarm(timeout)
             print("left time:", left)

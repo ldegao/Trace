@@ -53,8 +53,6 @@ from npc import NPC
 from scenario import Scenario
 import states
 import utils
-from utils import check_autoware_status
-import cluster
 
 config.set_carla_api_path()
 try:
@@ -67,7 +65,7 @@ except ModuleNotFoundError as e:
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 client, world, G, blueprint_library, town_map = None, None, None, None, None
-model = cluster.FeatureExtractor().to(device)
+# model = cluster.FeatureExtractor().to(device)
 accumulated_trace_graphs = []
 autoware_container = None
 exec_state = states.ExecState()
@@ -87,11 +85,6 @@ def carla_ActorBlueprint_pickle(actor_blueprint):
 
 def carla_ActorBlueprint_unpickle(blueprint_id):
     return blueprint_library.find(blueprint_id)
-
-
-def carla_ActorBlueprint_unpickle(blueprint_id):
-    return blueprint_library.find(blueprint_id)
-
 
 def carla_location_pickle(location):
     data = {
@@ -282,7 +275,6 @@ def set_args():
 def evaluation(ind: Scenario):
     global autoware_container
     min_dist = 99999
-    distance = 0
     nova = 0
     g_name = f'Generation_{ind.generation_id:05}'
     s_name = f'Scenario_{ind.scenario_id:05}'
@@ -299,14 +291,6 @@ def evaluation(ind: Scenario):
             print("[-] Fatal error occurred during test")
             exit(0)
         min_dist = ind.state.min_dist
-        trace_graph_important = ind.state.trace_graph_important
-        accumulated_trace_graphs.append(trace_graph_important)
-        if not ind.state.stuck:
-            # distance_list = cluster.calculate_distance(model, pca, accumulated_trace_graphs)
-            distance_list = cluster.calculate_distance(model, accumulated_trace_graphs)
-            distance = distance_list[-1]
-        else:
-            distance = 0
         for i in range(1, len(ind.state.speed)):
             acc = abs(ind.state.speed[i] - ind.state.speed[i - 1])
             nova += acc
@@ -337,8 +321,7 @@ def evaluation(ind: Scenario):
     # mutation loop ends
     if ind.found_error:
         print("[-]error detected. start a new cycle with a new seed")
-        # todo: get violation here
-    return min_dist, nova, distance
+    return min_dist, nova
 
 
 # MUTATION OPERATOR

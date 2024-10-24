@@ -28,3 +28,4 @@ venv/
 *.h5
 *.ckpt
 *.pth
+*.npy

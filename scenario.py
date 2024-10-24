@@ -11,7 +11,7 @@ import numpy as np
 import deap.base
 
 from npc import NPC
-from cluster import draw_picture, shift_scale_points_group
+# from cluster import draw_picture, shift_scale_points_group
 from simulate import simulate
 import constants as c
 from states import ScenarioState
@@ -47,7 +47,7 @@ class ScenarioFitness(deap.base.Fitness):
     """
     # minimize the closest distance between a pair of ADC
     # for test
-    weights = (-1.0, -1.0, -1.0)
+    weights = (-1.0, -1.0)
     """
     Todo: note: 
     """
@@ -160,8 +160,8 @@ class Scenario:
         # # reload scenario state
         # self.state = ScenarioState()
         self.save_video(error, log_filename)
-        if self.state.trace_graph_important != []:
-            self.save_trace(self.state.trace_graph_important, log_filename)
+        # if self.state.trace_graph_important != []:
+        #     self.save_trace(self.state.trace_graph_important, log_filename)
         if error:
             self.found_error = True
             return 1
@@ -261,19 +261,19 @@ class Scenario:
                 for point in sampled_points:
                     file.write(f'({point[0]},{point[1]},{point[2]})\n')
 
-    def save_trace(self, trace_graph, log_filename):
-        new_trace_graph = np.array([np.array([point[:2] for point in trace]) for trace in trace_graph])
-        trace_graph_points = shift_scale_points_group(np.array(new_trace_graph), (1024, 1024))
-        img = np.full((1024, 1024, 3), 255, dtype=np.uint8)
-        for j, trace in enumerate(trace_graph_points):
-            color = colors[j % len(colors)]
-            img = draw_picture(trace, color=color, base_image=img)
-            cv2.imwrite(os.path.join(
-                self.conf.trace_dir,
-                log_filename.replace(".json", ".png")
-            ), img)
-        self.save_trace_point(trace_graph, 15, log_filename)
-        print("save trace done")
+    # def save_trace(self, trace_graph, log_filename):
+    #     new_trace_graph = np.array([np.array([point[:2] for point in trace]) for trace in trace_graph])
+    #     trace_graph_points = shift_scale_points_group(np.array(new_trace_graph), (1024, 1024))
+    #     img = np.full((1024, 1024, 3), 255, dtype=np.uint8)
+    #     for j, trace in enumerate(trace_graph_points):
+    #         color = colors[j % len(colors)]
+    #         img = draw_picture(trace, color=color, base_image=img)
+    #         cv2.imwrite(os.path.join(
+    #             self.conf.trace_dir,
+    #             log_filename.replace(".json", ".png")
+    #         ), img)
+    #     self.save_trace_point(trace_graph, 15, log_filename)
+    #     print("save trace done")
 
     def check_error(self, state):
         if self.conf.debug:

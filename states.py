@@ -30,7 +30,6 @@ class ScenarioState:
         self.world = None
         self.G = None
         self.distance = 0
-        self.trace_graph_important = []
 
         self.first_frame_id = 0
         self.first_sim_elapsed_time = 0
@@ -40,7 +39,7 @@ class ScenarioState:
         self.end = False
 
         self.other = None
-        self.closest_car = None
+        self.closest_cars_list = []
         self.mutation = 0
 
         # failure states

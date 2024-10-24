@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from shapely.geometry import Polygon, Point
 
 import numpy as np
 from pygame.draw_py import Point
@@ -404,3 +405,51 @@ def check_autoware_status(world, timeout):
     finally:
         signal.alarm(left)
 
+
+def calculate_view_frustum(camera_transform, vertical_fov, image_width, image_height, camera_height):
+    # Step 1: calculate horizontal fov
+    aspect_ratio = image_width / image_height
+    vertical_fov_rad = math.radians(vertical_fov)
+    horizontal_fov_rad = 2 * math.atan(aspect_ratio * math.tan(vertical_fov_rad / 2))
+
+    # Step 2: calculate distance d
+    pitch = math.radians(camera_transform.rotation.pitch)
+    d = camera_height * math.tan(vertical_fov_rad / 2 + pitch)
+
+    # Step 3: calculate w
+    w = d * math.tan(horizontal_fov_rad / 2)
+
+    # Step 4: calculate yaw
+    yaw = math.radians(camera_transform.rotation.yaw)
+
+    # Step 5: calculate frustum in camera coordinate
+    frustum_camera = np.array([
+        [-w, d],
+        [w, d],
+        [-w, 0],
+        [w, 0]
+    ])
+
+    # Step 6: rotate frustum to world coordinate
+    rotation_matrix = np.array([
+        [math.cos(yaw), -math.sin(yaw)],
+        [math.sin(yaw), math.cos(yaw)]
+    ])
+
+    frustum_world = frustum_camera @ rotation_matrix.T
+
+    return frustum_world
+
+
+def filter_vehicles_in_area(vehicle_list, coord1, coord2, coord3, coord4):
+    area_polygon = Polygon([coord1, coord2, coord3, coord4])
+
+    filtered_vehicles = []
+    for vehicle in vehicle_list:
+        vehicle_position = vehicle.get_position_now()
+        vehicle_point = Point(vehicle_position.x, vehicle_position.y)
+
+        if area_polygon.contains(vehicle_point):
+            filtered_vehicles.append(vehicle)
+
+    return filtered_vehicles

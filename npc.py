@@ -117,7 +117,7 @@ class NPC:
         blueprint_library = world.get_blueprint_library()
         collision_bp = blueprint_library.find('sensor.other.collision')
         sensor_collision = world.spawn_actor(collision_bp, carla.Transform(),
-                                           attach_to=self.instance)
+                                             attach_to=self.instance)
         sensor_collision.listen(lambda event: _on_collision(event, state))
         sensors.append(sensor_collision)
         self.sensor_collision = sensor_collision
@@ -127,7 +127,7 @@ class NPC:
         blueprint_library = world.get_blueprint_library()
         lane_invasion_bp = blueprint_library.find('sensor.other.lane_invasion')
         sensor_lane_invasion = world.spawn_actor(lane_invasion_bp, carla.Transform(),
-                                               attach_to=self.instance)
+                                                 attach_to=self.instance)
         sensor_lane_invasion.listen(lambda event: _on_invasion(event, state))
         sensors.append(sensor_lane_invasion)
         self.sensor_lane_invasion = sensor_lane_invasion
@@ -149,9 +149,9 @@ class NPC:
             waypoint = town_map.get_waypoint(location, project_to_road=True,
                                              lane_type=carla.libcarla.LaneType.Driving)
             new_vehicle = NPC(npc.npc_type, waypoint.transform, npc_id,
-                          new_speed,
-                          npc.ego_loc, npc_bp=npc.npc_bp,
-                          spawn_stuck_frame=npc.spawn_stuck_frame)
+                              new_speed,
+                              npc.ego_loc, npc_bp=npc.npc_bp,
+                              spawn_stuck_frame=npc.spawn_stuck_frame)
             new_vehicle.fresh = True
             if new_vehicle.safe_check(npc):
                 print("split:", npc.npc_id, "to", npc.npc_id, npc_id)
