@@ -8,7 +8,9 @@ import subprocess
 import sys
 import threading
 import time
-from shapely.geometry import Polygon, Point
+
+import shapely
+import shapely.geometry
 
 import numpy as np
 from pygame.draw_py import Point
@@ -326,6 +328,8 @@ def _on_collision(event, state):
             # do not count collision while spawning ego vehicle (hard drop)
             state.crashed = True
             state.collision_to = event.other_actor.id
+            state.min_dist = 0
+            state.min_dist_frame = state.num_frames
 
 
 def _on_invasion(event, state):
@@ -407,49 +411,221 @@ def check_autoware_status(world, timeout):
 
 
 def calculate_view_frustum(camera_transform, vertical_fov, image_width, image_height, camera_height):
-    # Step 1: calculate horizontal fov
+    # Step 1: Calculate aspect ratio and horizontal FOV
     aspect_ratio = image_width / image_height
     vertical_fov_rad = math.radians(vertical_fov)
     horizontal_fov_rad = 2 * math.atan(aspect_ratio * math.tan(vertical_fov_rad / 2))
 
-    # Step 2: calculate distance d
-    pitch = math.radians(camera_transform.rotation.pitch)
-    d = camera_height * math.tan(vertical_fov_rad / 2 + pitch)
+    # Step 2: Correct calculation for ground projection depth (d_ground) based on camera height
+    d_ground = camera_height * math.tan(vertical_fov_rad / 2)
 
-    # Step 3: calculate w
-    w = d * math.tan(horizontal_fov_rad / 2)
+    # Step 3: Calculate the ground projection width (w_ground)
+    w_ground = d_ground * aspect_ratio
 
-    # Step 4: calculate yaw
+    # Step 4: Calculate camera yaw
     yaw = math.radians(camera_transform.rotation.yaw)
 
-    # Step 5: calculate frustum in camera coordinate
+    # Step 5: Calculate frustum in camera coordinates projected onto z=0 (ground level)
     frustum_camera = np.array([
-        [-w, d],
-        [w, d],
-        [-w, 0],
-        [w, 0]
+        [-w_ground / 2, d_ground],  # Left far corner
+        [w_ground / 2, d_ground],  # Right far corner
+        [-w_ground / 2, 0],  # Left near corner
+        [w_ground / 2, 0]  # Right near corner
     ])
 
-    # Step 6: rotate frustum to world coordinate
+    # Step 6: Rotate and translate frustum to world coordinates
     rotation_matrix = np.array([
         [math.cos(yaw), -math.sin(yaw)],
         [math.sin(yaw), math.cos(yaw)]
     ])
-
     frustum_world = frustum_camera @ rotation_matrix.T
 
-    return frustum_world
+    # Translate to camera's (x, y) position
+    cam_x, cam_y = camera_transform.location.x, camera_transform.location.y
+    frustum_world[:, 0] += cam_x
+    frustum_world[:, 1] += cam_y
+
+    return frustum_world[0], frustum_world[1], frustum_world[2], frustum_world[3]
 
 
-def filter_vehicles_in_area(vehicle_list, coord1, coord2, coord3, coord4):
-    area_polygon = Polygon([coord1, coord2, coord3, coord4])
+def filter_vehicles_in_frustum(vehicle_list, camera_transform, vertical_fov, image_width, image_height, camera_height):
+    # Get frustum vertices from the camera view
+    coord1, coord2, coord3, coord4 = calculate_view_frustum(
+        camera_transform, vertical_fov, image_width, image_height, camera_height
+    )
+
+    # print("Frustum vertices:")
+    # print(f"Coord1: {coord1}, Coord2: {coord2}, Coord3: {coord3}, Coord4: {coord4}")
+
+    # Create a polygon from frustum vertices
+    area_polygon = shapely.geometry.Polygon([coord1, coord2, coord3, coord4])
 
     filtered_vehicles = []
     for vehicle in vehicle_list:
-        vehicle_position = vehicle.get_position_now()
-        vehicle_point = Point(vehicle_position.x, vehicle_position.y)
-
+        vehicle_position = vehicle.get_transform().location
+        vehicle_point = shapely.geometry.Point(vehicle_position.x, vehicle_position.y)
+        # Check if the vehicle is within the frustum polygon
         if area_polygon.contains(vehicle_point):
             filtered_vehicles.append(vehicle)
 
     return filtered_vehicles
+
+
+def serialize_vehicle(actor):
+    """
+    Extracts the physical properties of a carla.Actor object (vehicle) and returns them as a dictionary.
+    """
+    # Get the bounding box (size) of the vehicle
+    bounding_box = actor.bounding_box
+    vehicle_size = {
+        'extent_x': bounding_box.extent.x,
+        'extent_y': bounding_box.extent.y,
+        'extent_z': bounding_box.extent.z
+    }
+
+    # Get the velocity vector
+    velocity = actor.get_velocity()
+    velocity_data = {
+        'x': velocity.x,
+        'y': velocity.y,
+        'z': velocity.z
+    }
+
+    # Get the angular velocity vector
+    angular_velocity = actor.get_angular_velocity()
+    angular_velocity_data = {
+        'x': angular_velocity.x,
+        'y': angular_velocity.y,
+        'z': angular_velocity.z
+    }
+
+    # Get the vehicle's transform (position and rotation)
+    transform = actor.get_transform()
+    transform_data = {
+        'location': {
+            'x': transform.location.x,
+            'y': transform.location.y,
+            'z': transform.location.z
+        },
+        'rotation': {
+            'pitch': transform.rotation.pitch,
+            'yaw': transform.rotation.yaw,
+            'roll': transform.rotation.roll
+        }
+    }
+
+    # Combine all data into a dictionary
+    vehicle_data = {
+        'id': actor.id,
+        'type_id': actor.type_id,
+        'is_alive': actor.is_alive,
+        'size': vehicle_size,
+        'velocity': velocity_data,
+        'angular_velocity': angular_velocity_data,
+        'transform': transform_data
+    }
+
+    return vehicle_data
+
+
+def update_vehicle_file(conf, state, closest_cars_list, player, npc_list):
+    # Initialize data structure
+    new_data = {
+        "min_dist": state.min_dist,
+        str(state.num_frames): {
+            "NPC": [],
+            "player": serialize_vehicle(player)
+        }
+    }
+
+    # Process closest_cars_list
+    # print(closest_cars_list)
+    for closest_cars in closest_cars_list:
+        for npc in npc_list:
+            if npc.instance is not None:
+                if npc.instance.id == closest_cars.id:
+                    new_data[str(state.num_frames)]["NPC"].append(serialize_vehicle(closest_cars))
+    time_record_file = "{}/gid:{}_sid:{}.json".format(conf.time_record_dir, state.generation_id, state.scenario_id)
+    # Check if the file exists
+    if os.path.exists(time_record_file):
+        # If the file exists, load the current JSON data
+        with open(time_record_file, "r") as f:
+            try:
+                file_data = json.load(f)
+            except json.JSONDecodeError:
+                file_data = {}
+    else:
+        file_data = {}
+
+    # Update the file with new data
+    file_data.update(new_data)
+
+    # Write the updated data back to the file
+    with open(time_record_file, "w") as f:
+        json.dump(file_data, f, indent=4)
+
+
+# def carla_ActorBlueprint_pickle(actor_blueprint):
+#     return actor_blueprint.id
+#
+#
+# def carla_ActorBlueprint_unpickle(blueprint_id):
+#     return blueprint_library.find(blueprint_id)
+
+
+def carla_location_pickle(location):
+    data = {
+        'location_x': location.x,
+        'location_y': location.y,
+        'location_z': location.z,
+    }
+    json_string = json.dumps(data)
+    return json_string
+
+
+def carla_location_unpickle(json_string):
+    data = json.loads(json_string)
+    x, y, z = data
+    return carla.Location(x, y, z)
+
+
+def carla_rotation_pickle(rotation):
+    data = {
+        'rotation_pitch': rotation.pitch,
+        'rotation_yaw': rotation.yaw,
+        'rotation_roll': rotation.roll
+    }
+    json_string = json.dumps(data)
+    return json_string
+
+
+def carla_rotation_unpickle(json_string):
+    data = json.loads(json_string)
+    pitch, yaw, roll = data
+    return carla.Rotation(pitch, yaw, roll)
+
+
+def carla_transform_pickle(transform):
+    location = transform.location
+    rotation = transform.rotation
+    data = {
+        'location_x': location.x,
+        'location_y': location.y,
+        'location_z': location.z,
+        'rotation_pitch': rotation.pitch,
+        'rotation_yaw': rotation.yaw,
+        'rotation_roll': rotation.roll
+    }
+    json_string = json.dumps(data)
+    return json_string
+
+
+def carla_transform_unpickle(json_string):
+    data = json.loads(json_string)
+    x = data['location_x']
+    y = data['location_y']
+    z = data['location_z']
+    pitch = data['rotation_pitch']
+    yaw = data['rotation_yaw']
+    roll = data['rotation_roll']
+    return carla.Transform(carla.Location(x, y, z), carla.Rotation(pitch, yaw, roll))

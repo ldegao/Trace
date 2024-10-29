@@ -46,9 +46,11 @@ class Config:
         self.score_dir = None
         self.rosbag_dir = None
         self.cam_dir = None
-        self.trace_dir = None
-        self.meta_file = None
+        # self.meta_file = None
+        self.npc_dir = None
+        self.time_record_dir = None
         self.error_dir = None
+        self.picture_dir = None
         self.queue_dir = None
         self.debug = True
 
@@ -96,10 +98,12 @@ class Config:
 
     def set_paths(self):
         self.queue_dir = os.path.join(self.out_dir, "queue")
+        self.picture_dir = os.path.join(self.out_dir, "picture")
         self.error_dir = os.path.join(self.out_dir, "errors")
-        self.meta_file = os.path.join(self.out_dir, "meta")
+        # self.meta_file = os.path.join(self.out_dir, "meta")
+        self.npc_dir = os.path.join(self.out_dir, "npc")
+        self.time_record_dir = os.path.join(self.out_dir, "time_record")
         self.cam_dir = os.path.join(self.out_dir, "camera")
-        self.trace_dir = os.path.join(self.out_dir, "trace")
         self.rosbag_dir = os.path.join(self.out_dir, "rosbags")
 
     # def enqueue_seed_scenarios(self):

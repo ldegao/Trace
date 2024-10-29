@@ -8,10 +8,12 @@ import json
 # Specify the path for data saving
 data_save_path = '../data/save'
 
+
 # Create a target folder if it does not exist
 def create_folder_if_not_exists(folder_path):
     if not os.path.exists(folder_path):
         os.makedirs(folder_path, exist_ok=True)
+
 
 # Copy and rename the video to the specified folder to avoid filename conflicts
 def copy_and_rename_video(source_video_path, destination_folder, scene_folder):
@@ -20,9 +22,11 @@ def copy_and_rename_video(source_video_path, destination_folder, scene_folder):
     destination_video_path = os.path.join(destination_folder, new_video_name)
     shutil.copy2(source_video_path, destination_video_path)
 
+
 # Main function
 def main():
-    event_count = {event: 0 for event in ["crash", "stuck", "lane_invasion", "red", "speeding", "other", "correct", "error"]}
+    event_count = {event: 0 for event in
+                   ["crash", "stuck", "lane_invasion", "red", "speeding", "other", "correct", "error"]}
     with open('../data/save/output.txt', 'w') as output_file:
         # Iterate through all scene folders
         for scene_folder in os.listdir(data_save_path):
@@ -64,6 +68,7 @@ def main():
         for event, count in event_count.items():
             output_file.write(f"Total videos in {event}: {count}\n")
             print(f"Total videos in {event}: {count}")
+
 
 if __name__ == "__main__":
     main()

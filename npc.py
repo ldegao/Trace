@@ -7,16 +7,16 @@ import constants as c
 import math
 from shapely.geometry import Polygon
 
-from utils import _on_collision, _on_invasion
-
 config.set_carla_api_path()
 import carla
+
+import utils
 
 
 class NPC:
     npc_id: int
     npc_type: int
-    npc_bp = carla.ActorBlueprint
+    npc_bp_id = str
     spawn_point = carla.Waypoint
     speed: int
     spawn_stuck_frame: int
@@ -29,14 +29,14 @@ class NPC:
     sensor_lane_invasion: carla.Actor
 
     def __init__(self, npc_type, spawn_point, npc_id=0, speed=0, ego_loc=None,
-                 npc_bp=None, spawn_stuck_frame=0):
+                 spawn_stuck_frame=0, npc_bp_id=None):
         self.npc_type = npc_type
         self.spawn_point = spawn_point
         self.npc_id = npc_id
         self.speed = speed
         self.ego_loc = ego_loc
-        self.npc_bp = npc_bp
         self.spawn_stuck_frame = spawn_stuck_frame
+        self.npc_bp_id = npc_bp_id
         self.fresh = True
         self.instance = None
         self.sensor_collision = None
@@ -51,10 +51,28 @@ class NPC:
             copy.deepcopy(self.npc_id, memo),
             copy.deepcopy(self.speed, memo),
             copy.deepcopy(self.ego_loc, memo),
-            copy.deepcopy(self.npc_bp, memo),
             copy.deepcopy(self.spawn_stuck_frame, memo),
+            copy.deepcopy(self.npc_bp_id, memo),
         )
         return npc_copy
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if self.ego_loc:
+            state['ego_loc'] = utils.carla_location_pickle(self.ego_loc)
+        if self.spawn_point:
+            state['spawn_point'] = utils.carla_transform_pickle(self.spawn_point)
+        state['instance'] = None
+        state['sensor_collision'] = None
+        state['sensor_lane_invasion'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if state.get('ego_loc'):
+            self.ego_loc = utils.carla_location_unpickle(state['ego_loc'])
+        if state.get('spawn_point'):
+            self.spawn_point = utils.carla_transform_unpickle(state['spawn_point'])
 
     def safe_check(self, another_npc, width=1.5, adjust=2):
         """
@@ -118,7 +136,7 @@ class NPC:
         collision_bp = blueprint_library.find('sensor.other.collision')
         sensor_collision = world.spawn_actor(collision_bp, carla.Transform(),
                                              attach_to=self.instance)
-        sensor_collision.listen(lambda event: _on_collision(event, state))
+        sensor_collision.listen(lambda event: utils._on_collision(event, state))
         sensors.append(sensor_collision)
         self.sensor_collision = sensor_collision
 
@@ -128,7 +146,7 @@ class NPC:
         lane_invasion_bp = blueprint_library.find('sensor.other.lane_invasion')
         sensor_lane_invasion = world.spawn_actor(lane_invasion_bp, carla.Transform(),
                                                  attach_to=self.instance)
-        sensor_lane_invasion.listen(lambda event: _on_invasion(event, state))
+        sensor_lane_invasion.listen(lambda event: utils._on_invasion(event, state))
         sensors.append(sensor_lane_invasion)
         self.sensor_lane_invasion = sensor_lane_invasion
 
@@ -150,8 +168,8 @@ class NPC:
                                              lane_type=carla.libcarla.LaneType.Driving)
             new_vehicle = NPC(npc.npc_type, waypoint.transform, npc_id,
                               new_speed,
-                              npc.ego_loc, npc_bp=npc.npc_bp,
-                              spawn_stuck_frame=npc.spawn_stuck_frame)
+                              npc.ego_loc,
+                              spawn_stuck_frame=npc.spawn_stuck_frame,npc_bp_id=npc.npc_bp_id)
             new_vehicle.fresh = True
             if new_vehicle.safe_check(npc):
                 print("split:", npc.npc_id, "to", npc.npc_id, npc_id)

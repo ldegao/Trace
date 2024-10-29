@@ -15,6 +15,8 @@ class ExecState:
         self.elapsed_time = 0
         self.end = False
         self.proc_state = None
+        self.generation_id = -1
+        self.scenario_id = -1
 
 
 class ScenarioState:

@@ -36,6 +36,7 @@ import json
 # from collections import deque
 import concurrent.futures
 import math
+from types import SimpleNamespace
 from typing import List
 from subprocess import Popen, PIPE
 
@@ -79,70 +80,6 @@ exec_state = states.ExecState()
 # walker_controller_bp = blueprint_library.find('controller.ai.walker')
 # player_bp = blueprint_library.filter('nissan')[0]
 
-def carla_ActorBlueprint_pickle(actor_blueprint):
-    return actor_blueprint.id
-
-
-def carla_ActorBlueprint_unpickle(blueprint_id):
-    return blueprint_library.find(blueprint_id)
-
-def carla_location_pickle(location):
-    data = {
-        'location_x': location.x,
-        'location_y': location.y,
-        'location_z': location.z,
-    }
-    json_string = json.dumps(data)
-    return json_string
-
-
-def carla_location_unpickle(json_string):
-    data = json.loads(json_string)
-    x, y, z = data
-    return carla.Location(x, y, z)
-
-
-def carla_rotation_pickle(rotation):
-    data = {
-        'rotation_pitch': rotation.pitch,
-        'rotation_yaw': rotation.yaw,
-        'rotation_roll': rotation.roll
-    }
-    json_string = json.dumps(data)
-    return json_string
-
-
-def carla_rotation_unpickle(json_string):
-    data = json.loads(json_string)
-    pitch, yaw, roll = data
-    return carla.Rotation(pitch, yaw, roll)
-
-
-def carla_transform_pickle(transform):
-    location = transform.location
-    rotation = transform.rotation
-    data = {
-        'location_x': location.x,
-        'location_y': location.y,
-        'location_z': location.z,
-        'rotation_pitch': rotation.pitch,
-        'rotation_yaw': rotation.yaw,
-        'rotation_roll': rotation.roll
-    }
-    json_string = json.dumps(data)
-    return json_string
-
-
-def carla_transform_unpickle(json_string):
-    data = json.loads(json_string)
-    x = data['location_x']
-    y = data['location_y']
-    z = data['location_z']
-    pitch = data['rotation_pitch']
-    yaw = data['rotation_yaw']
-    roll = data['rotation_roll']
-    return carla.Transform(carla.Location(x, y, z), carla.Rotation(pitch, yaw, roll))
-
 
 def create_test_scenario(conf, seed_dict):
     return Scenario(conf, seed_dict)
@@ -176,16 +113,18 @@ def ini_hyperparameters(conf, args):
         print(f"Using seed dir {conf.seed_dir}")
     conf.set_paths()
 
-    with open(conf.meta_file, "w") as f:
-        f.write(" ".join(sys.argv) + "\n")
-        f.write("start: " + str(int(conf.cur_time)) + "\n")
+    # with open(conf.meta_file, "w") as f:
+    #     f.write(" ".join(sys.argv) + "\n")
+    #     f.write("start: " + str(int(conf.cur_time)) + "\n")
 
     try:
         os.mkdir(conf.queue_dir)
         os.mkdir(conf.error_dir)
+        os.mkdir(conf.picture_dir)
         os.mkdir(conf.rosbag_dir)
         os.mkdir(conf.cam_dir)
-        os.mkdir(conf.trace_dir)
+        os.mkdir(conf.npc_dir)
+        os.mkdir(conf.time_record_dir)
     except Exception as e:
         print(e)
         sys.exit(-1)
@@ -207,7 +146,7 @@ def ini_hyperparameters(conf, args):
 
     conf.town = args.town
     conf.num_mutation_car = args.num_mutation_car
-    conf.density = args.density
+    conf.density = float(args.density)
     conf.no_traffic_lights = args.no_traffic_lights
     conf.debug = args.debug
 
@@ -260,7 +199,7 @@ def set_args():
                                  help="density of vehicles,1.0 means add 1 bg vehicle per 1 sec")
     argument_parser.add_argument("--town", default=3, type=int,
                                  help="Test on a specific town (e.g., '--town 3' forces Town03)")
-    argument_parser.add_argument("--timeout", default="60", type=int,
+    argument_parser.add_argument("--timeout", default="20", type=int,
                                  help="Seconds to timeout if vehicle is not moving")
     argument_parser.add_argument("--no-speed-check", action="store_true")
     argument_parser.add_argument("--no-lane-check", action="store_true")
@@ -286,6 +225,8 @@ def evaluation(ind: Scenario):
     try:
         # profiler = cProfile.Profile()
         # profiler.enable()  #
+        ind.state.scenario_id = ind.scenario_id
+        ind.state.generation_id = ind.generation_id
         ret = ind.run_test(exec_state)
         if ret == -1:
             print("[-] Fatal error occurred during test")
@@ -444,10 +385,13 @@ def seed_initialize(town, town_map):
     return seed_dict
 
 
-def init_env():
+def init_env(args):
     conf = config.Config()
-    argument_parser = set_args()
-    args = argument_parser.parse_args()
+
+    if args is None:
+        argument_parser = set_args()
+        args = argument_parser.parse_args()
+
     ini_hyperparameters(conf, args)
     if conf.town is not None:
         town_map = "Town0{}".format(conf.town)
@@ -515,17 +459,17 @@ def print_all_attr(obj):
             print(f"Attribute: {attr_name}, Value: {attr_value}, Type: {attr_type}")
 
 
-def main():
+def main(args=None):
     # STEP 0: init env
     global client, world, G, blueprint_library, town_map
     logging.basicConfig(filename='./data/record.log', filemode='a', level=logging.INFO,
                         format='%(asctime)s - %(message)s')
-    copyreg.pickle(carla.libcarla.Location, carla_location_pickle, carla_location_unpickle)
-    copyreg.pickle(carla.libcarla.Rotation, carla_rotation_pickle, carla_rotation_unpickle)
-    copyreg.pickle(carla.libcarla.Transform, carla_transform_pickle, carla_transform_unpickle)
-    copyreg.pickle(carla.libcarla.ActorBlueprint, carla_ActorBlueprint_pickle, carla_ActorBlueprint_unpickle)
+    copyreg.pickle(carla.libcarla.Location, utils.carla_location_pickle, utils.carla_location_unpickle)
+    copyreg.pickle(carla.libcarla.Rotation, utils.carla_rotation_pickle, utils.carla_rotation_unpickle)
+    copyreg.pickle(carla.libcarla.Transform, utils.carla_transform_pickle, utils.carla_transform_unpickle)
+    # copyreg.pickle(carla.libcarla.ActorBlueprint, carla_ActorBlueprint_pickle, carla_ActorBlueprint_unpickle)
 
-    conf, town, town_map, exec_state.client, exec_state.world, exec_state.G = init_env()
+    conf, town, town_map, exec_state.client, exec_state.world, exec_state.G = init_env(args)
     world = exec_state.world
     blueprint_library = world.get_blueprint_library()
     # if conf.agent_type == c.AUTOWARE:
@@ -592,6 +536,9 @@ def main():
         logbook.record(gen=curr_gen, **record)
         print(logbook.stream)
         # Save directory for trace graphs
+
+
+
 
 
 if __name__ == "__main__":

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
+import copyreg
 import fcntl
 import glob
+import json
 import logging
 # Python packages
 import os
 import pdb
+import pickle
 import random
 import select
 import shutil
+import subprocess
 import sys
 import threading
 import signal
@@ -20,11 +24,14 @@ import docker
 import networkx as nx
 import numpy as np
 import pygame
+
+import utils
 from npc import NPC
 import config
 import constants as c
 from utils import quaternion_from_euler, set_traffic_lights_state, get_angle_between_vectors, \
-    set_autopilot, delete_npc, check_autoware_status, mark_npc, timeout_handler
+    set_autopilot, delete_npc, check_autoware_status, mark_npc, timeout_handler, filter_vehicles_in_frustum, \
+    serialize_vehicle, update_vehicle_file
 
 config.set_carla_api_path()
 try:
@@ -51,17 +58,19 @@ docker_client = docker.from_env()
 def record_closest_cars(npc_vehicles, player_loc, state):
     # record min_dist
     min_dist = state.min_dist
-    state.closest_cars_list = []
     for npc_vehicle in npc_vehicles:
         distance = npc_vehicle.get_location().distance(player_loc)
         if distance < min_dist:
             min_dist = distance
-            closest_car = npc_vehicle
     if min_dist < state.min_dist:
         state.min_dist = min_dist
-        state.closest_cars_list = closest_car
-    # todo:record closest_cars shot by top camera
+        state.min_dist_frame = state.num_frames
 
+    camera_tf = carla.Transform(
+        carla.Location(x=player_loc.x, y=player_loc.y, z=50.0),
+        carla.Rotation(pitch=-90.0)
+    )
+    return filter_vehicles_in_frustum(npc_vehicles, camera_tf, 105, 800, 600, 50)
 
 
 def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
@@ -77,6 +86,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
     max_wheels_for_non_motorized = 2
     carla_error = False
     state.min_dist = 99999
+    state.min_dist_frame = -1
     player_loc = None
     time_start = time.time()
     npc_now = []
@@ -156,7 +166,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                 # world tick
                 if conf.agent_type == c.BEHAVIOR:
                     world.tick()
-                # Use sampling frequency of FPS  for precision
+                # Use sampling frequency of FPS for precision
                 clock.tick(c.FRAME_RATE)
                 # Get frame info
                 snapshot = world.get_snapshot()
@@ -183,7 +193,9 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                                                                                   s_started, sensors, speed, state,
                                                                                   world)
                 # record the closest cars and dangerous score every timestep
-                record_closest_cars(npc_vehicles, player_loc, state)
+                closest_cars_list = record_closest_cars(npc_vehicles, player_loc, state)
+                update_vehicle_file(conf, state, closest_cars_list, player, npc_list)
+
                 # mark useless vehicles for any frame
                 mark_useless_npc(npc_now, conf, player_lane_id, player_loc, player_rot, player_road_id, exec_state.G,
                                  town_map)
@@ -205,7 +217,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                                                                            sensors, state, town_map, vehicle_bp_library,
                                                                            world, wp, exec_state.G)
                 control_npc(agents_now, speed_limit)
-                # delete vehicles which life is end
+                # delete vehicles which life is ended
                 for npc in npc_list:
                     if npc.instance is not None:
                         if npc.death_time == 0:
@@ -252,7 +264,6 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
         settings.synchronous_mode = False
         settings.fixed_delta_seconds = None
         world.apply_settings(settings)
-
         all_time = time.time() - time_start
         FPS = all_frame / all_time
         if FPS == 0:
@@ -264,13 +275,33 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
         logging.info("distance:%s", state.distance)
         logging.info("FPS:%s", FPS)
         state.end = True
-
+        # reload world
+        if conf.debug:
+            print("[debug] reload")
+        if not world_reload(npc_list, npc_vehicles, npc_walkers, npc_now, sensors, world):
+            retval = 128
+            if conf.debug:
+                print("[debug] world reload fail")
+            return retval, npc_list, state
+        client.reload_world()
+        # save npc_list at last for replay
+        npc_file = "{}/gid:{}_sid:{}.save".format(conf.npc_dir, state.generation_id, state.scenario_id)
+        with open(npc_file, "wb") as file:
+            pickle.dump(npc_list, file)
         if exec_state.proc_state:
-            exec_state.proc_state.terminate()
-            exec_state.proc_state.wait()
-            exec_state.proc_state.stdout.close()
-            exec_state.proc_state.stderr.close()
-
+            try:
+                exec_state.proc_state.terminate()
+                exec_state.proc_state.wait()
+            except subprocess.TimeoutExpired:
+                exec_state.proc_state.kill()
+                exec_state.proc_state.wait()
+            finally:
+                if exec_state.proc_state.stdout:
+                    exec_state.proc_state.stdout.close()
+                if exec_state.proc_state.stderr:
+                    exec_state.proc_state.stderr.close()
+        # save jpg files within the 10s before state.min_dist_frame
+        move_images(conf, state)
         # save video in output_dir
         if conf.agent_type == c.BEHAVIOR:
             save_behavior_video(carla_error, state)
@@ -309,13 +340,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
         #     if conf.debug:
         #         print("[debug] world reload fail")
         #     return retval, npc_list, state
-        if conf.debug:
-            print("[debug] reload")
-        for npc in npc_now:
-            npc.instance = None
-        for npc in npc_list:
-            npc.fresh = True
-        client.reload_world()
+
         if retval == 128:
             print("[debug] exit by user requests")
             return retval, npc_list, state
@@ -534,7 +559,7 @@ def add_new_car(npc_list, npc_vehicles, npc_now, add_car_frame, agents_now, auto
                 )
                 # random choose a car bp from vehicle_bp_library
                 npc_bp = random.choice(vehicle_bp_library)
-
+                npc_bp_id = npc_bp.id
                 if add_type <= conf.immobile_percentage:
                     # add a immobile car
                     bg_speed = 0
@@ -542,14 +567,14 @@ def add_new_car(npc_list, npc_vehicles, npc_now, add_car_frame, agents_now, auto
                                   spawn_point=npc_spawn_point, speed=bg_speed,
                                   npc_id=len(npc_list),
                                   ego_loc=player_loc,
-                                  npc_bp=npc_bp, spawn_stuck_frame=state.stuck_duration)
+                                  spawn_stuck_frame=state.stuck_duration, npc_bp_id=npc_bp_id)
                 else:
                     bg_speed = random.uniform(0 / 3.6, 20 / 3.6)
                     new_npc = NPC(npc_type=c.VEHICLE,
                                   spawn_point=npc_spawn_point, speed=bg_speed,
                                   npc_id=len(npc_list),
                                   ego_loc=player_loc,
-                                  npc_bp=npc_bp, spawn_stuck_frame=state.stuck_duration)
+                                  spawn_stuck_frame=state.stuck_duration, npc_bp_id=npc_bp_id)
                 # do safe check
                 flag = True
                 for npc in npc_now:
@@ -559,7 +584,7 @@ def add_new_car(npc_list, npc_vehicles, npc_now, add_car_frame, agents_now, auto
                 if not new_npc.safe_check(ego):
                     flag = False
                 if flag:
-                    npc_vehicle = world.try_spawn_actor(new_npc.npc_bp, npc_spawn_point)
+                    npc_vehicle = world.try_spawn_actor(npc_bp, npc_spawn_point)
                 else:
                     continue
             if npc_vehicle is not None:
@@ -590,7 +615,8 @@ def add_old_npc(npc_list, npc_vehicles, npc_now, agents_now, conf, found_frame, 
             if npc.npc_type is None:
                 npc.fresh = False
                 break
-            npc_vehicle = world.try_spawn_actor(npc.npc_bp, npc.spawn_point)
+            npc_bp = world.get_blueprint_library().find(npc.npc_bp_id)
+            npc_vehicle = world.try_spawn_actor(npc_bp, npc.spawn_point)
             if npc_vehicle is not None:
                 npc_spawn_rotation = npc.spawn_point.rotation
                 roll_degrees = npc_spawn_rotation.yaw
@@ -806,22 +832,6 @@ def check_and_remove_excess_images(pattern, max_frames):
     images = sorted(glob.glob(pattern))
     while len(images) > max_frames:
         os.remove(images.pop(0))
-
-
-def save_jpg_for_gpt(interval):
-    # save the last 15 s frame
-    src_dir = f"/tmp/fuzzerdata/{username}/front-*.jpg"
-    dest_dir = "data/output/gpt"
-    os.makedirs(dest_dir, exist_ok=True)
-    max_frames = c.FRAME_RATE * c.VIDEO_TIME
-    check_and_remove_excess_images(f"/tmp/fuzzerdata/{username}/front-*.jpg", max_frames)
-    files = sorted(glob.glob(src_dir))
-    for i, file in enumerate(files):
-        if i % interval == 0:
-            dest_file = os.path.join(dest_dir, f"top_{i // interval}.jpg")
-            shutil.copy(file, dest_file)
-            print(f"Copied {file} to {dest_file}")
-    print("done")
 
 
 def save_behavior_video(carla_error, state):
@@ -1066,7 +1076,6 @@ def ego_initialize(agents_now, exec_state, blueprint_library, conf, player_bp, s
         print("\n    [*] found [{}] at {}".format(player.id,
                                                   player.get_location()))
         timeout = 120
-        timeout = 9999
         try:
             left = signal.alarm(timeout)
             print("left time:", left)
@@ -1405,3 +1414,59 @@ def check_vehicle(proc):
             break
         time.sleep(1)
         print("[*] Waiting for Autoware vehicle Ready" + "\r", end="")
+
+
+def move_images(conf, state):
+    # Define the start and end frame numbers
+    start_frame = max(0, state.min_dist_frame - 100)  # Move up to 100 frames before min_dist_frame
+    end_frame = state.min_dist_frame  # Move up to min_dist_frame
+    scenario_id= state.scenario_id
+    generation_id = state.generation_id
+    os.mkdir(os.path.join(conf.picture_dir, f"gid:{generation_id}_sid:{scenario_id}"))
+    # Iterate over the specified range of frames
+    for frame in range(start_frame, end_frame + 1):
+        # Construct the source file path
+        src_file = f"/tmp/fuzzerdata/{username}/top-{frame:05d}.jpg"
+        # Construct the destination file path
+        dst_file = os.path.join(conf.picture_dir, f"gid:{generation_id}_sid:{scenario_id}/top-{frame:05d}.jpg")
+        # Check if the source file exists
+        if os.path.exists(src_file):
+            # Move the file to the target directory
+            shutil.move(src_file, dst_file)
+
+
+def check_serialization(obj):
+    """
+    Check the type of all attributes of an object and test if they can be serialized.
+    """
+    results = {}
+    for attr_name in dir(obj):
+        if not attr_name.startswith("__"):  # Ignore built-in attributes
+            attr_value = getattr(obj, attr_name)
+            attr_type = type(attr_value)
+
+            # Try to serialize the attribute
+            try:
+                pickle.dumps(attr_value)
+                serializable = True
+            except (pickle.PicklingError, TypeError):
+                serializable = False
+
+            results[attr_name] = {
+                'type': attr_type,
+                'serializable': serializable
+            }
+
+    return results
+
+
+def print_npc_serialization_info(npc_list):
+    """
+    Print the type and serialization status of each attribute for each npc in the list.
+    """
+    for i, npc in enumerate(npc_list):
+        print(f"NPC #{i} (Type: {type(npc)}):")
+        results = check_serialization(npc)
+        for attr_name, info in results.items():
+            print(f"  Attribute '{attr_name}': Type = {info['type']}, Serializable = {info['serializable']}")
+        print("\n" + "-" * 50 + "\n")
