@@ -163,22 +163,16 @@ def save_files():
     # Iterate over all items (files and directories) in output_dir
     for item in os.listdir(output_dir):
         item_path = os.path.join(output_dir, item)
+        target_path = os.path.join(save_dir, item)
 
         if os.path.isdir(item_path):
-            # Handle directories
+            # Use copytree for directories to handle nested structures
             if not os.listdir(item_path):  # Check if directory is empty
                 print(f"Directory {item_path} is empty. Skipping...")
                 continue
 
-            # Create the corresponding directory in save_dir
-            new_item_dir = os.path.join(save_dir, item)
-            os.makedirs(new_item_dir, exist_ok=True)
-
-            # Copy files from the non-empty directory
-            for file in os.listdir(item_path):
-                file_path = os.path.join(item_path, file)
-                shutil.copy(file_path, new_item_dir)
-            print(f"Copied files from {item_path} to {new_item_dir}")
+            shutil.copytree(item_path, target_path)
+            print(f"Copied directory {item_path} to {target_path}")
 
         elif os.path.isfile(item_path):
             # Handle files directly in the output_dir root
@@ -260,10 +254,15 @@ def run_test(sim_port, target, density, town, duration):
         try:
             # Directly call the main function from fuzzer.py
             fuzzer.main(args)
-        finally:
-            # Switch back to the original directory after the main function finishes
-            os.chdir(current_dir)
+        except (SystemExit, TimeoutError) as e:
+            print(f"Exception caught: {e}. Continuing program execution.")
+            # Perform additional actions or logging as needed
+        except KeyboardInterrupt as e:
+            # Capture any other general exceptions
+            print(f"Unexpected exception caught: {e}")
+            return
 
+        os.chdir(current_dir)
         # Check if the Docker container is still running
         docker_name = f"carla-{os.getlogin()}"
         docker_status, _ = run_command(f"docker inspect -f '{{{{.State.Status}}}}' {docker_name}")
@@ -279,6 +278,6 @@ if __name__ == "__main__":
     density = "0.4"
     town = "3"
     target = "autoware"
-    duration = 3600  # Duration in seconds
+    duration = 86400  # Duration in seconds
 
     run_test(sim_port, target, density, town, duration)

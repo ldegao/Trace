@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-import copyreg
 import fcntl
 import glob
-import json
 import logging
 # Python packages
 import os
-import pdb
 import pickle
 import random
 import select
 import shutil
 import subprocess
 import sys
-import threading
 import signal
 import time
 import math
@@ -29,9 +25,6 @@ import utils
 from npc import NPC
 import config
 import constants as c
-from utils import quaternion_from_euler, set_traffic_lights_state, get_angle_between_vectors, \
-    set_autopilot, delete_npc, check_autoware_status, mark_npc, timeout_handler, filter_vehicles_in_frustum, \
-    serialize_vehicle, update_vehicle_file
 
 config.set_carla_api_path()
 try:
@@ -70,7 +63,7 @@ def record_closest_cars(npc_vehicles, player_loc, state):
         carla.Location(x=player_loc.x, y=player_loc.y, z=50.0),
         carla.Rotation(pitch=-90.0)
     )
-    return filter_vehicles_in_frustum(npc_vehicles, camera_tf, 105, 800, 600, 50)
+    return utils.filter_vehicles_in_frustum(npc_vehicles, camera_tf, 105, 800, 600, 50)
 
 
 def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
@@ -94,7 +87,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
     sensors = []
     npc_vehicles = []
     npc_walkers = []
-    nearby_dict = []
+    json_cache = {}
 
     # for autoware
     frame_gap = 0
@@ -127,7 +120,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
             autoware_goal_publish(goal_loc, goal_rot, state, world)
 
         # SIMULATION LOOP FOR AUTOWARE and BasicAgent
-        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.signal(signal.SIGALRM, utils.timeout_handler)
         signal.signal(signal.SIGINT, signal.default_int_handler)
         signal.signal(signal.SIGSEGV, state.sig_handler)
         signal.signal(signal.SIGABRT, state.sig_handler)
@@ -194,8 +187,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                                                                                   world)
                 # record the closest cars and dangerous score every timestep
                 closest_cars_list = record_closest_cars(npc_vehicles, player_loc, state)
-                update_vehicle_file(conf, state, closest_cars_list, player, npc_list)
-
+                json_cache = utils.update_vehicle_file(state, closest_cars_list, player, npc_list, json_cache)
                 # mark useless vehicles for any frame
                 mark_useless_npc(npc_now, conf, player_lane_id, player_loc, player_rot, player_road_id, exec_state.G,
                                  town_map)
@@ -221,7 +213,7 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                 for npc in npc_list:
                     if npc.instance is not None:
                         if npc.death_time == 0:
-                            delete_npc(npc, npc_vehicles, sensors, agents_now, npc_now)
+                            utils.delete_npc(npc, npc_vehicles, sensors, agents_now, npc_now)
                         elif npc.death_time > 0:
                             npc.death_time -= 1
 
@@ -243,7 +235,6 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
             # nearby_dict, trace_graph_important = record_trace(npc_vehicles, exec_state, player, player_loc, state,
             #                                                   town_map, trace_dict,
             #                                                   trace_graph, trace_graph_important)
-            state.nearby_dict = nearby_dict
         except KeyboardInterrupt:
             print("quitting")
             retval = 128
@@ -270,7 +261,6 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
             FPS = 24
         valid_time = valid_frames / FPS
         logging.info("crashed:%s", state.crashed)
-        logging.info("nearby_car:%s", len(nearby_dict))
         logging.info("valid_time/time: %s/%s", valid_time, all_time)
         logging.info("distance:%s", state.distance)
         logging.info("FPS:%s", FPS)
@@ -284,6 +274,8 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
                 print("[debug] world reload fail")
             return retval, npc_list, state
         client.reload_world()
+        # save npc json
+        utils.write_json_cache_to_file(conf, state, json_cache)
         # save npc_list at last for replay
         npc_file = "{}/gid:{}_sid:{}.save".format(conf.npc_dir, state.generation_id, state.scenario_id)
         with open(npc_file, "wb") as file:
@@ -311,20 +303,20 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
             time.sleep(1)
             os.system("rosnode kill /recorder_video_top")
             time.sleep(1)
-            # os.system("rosnode kill /recorder_bag")
-            # while os.path.exists(f"/tmp/fuzzerdata/{c.USERNAME}/bagfile.lz4.bag.active"):
-            #     print("waiting for rosbag to dump data")
-            #     time.sleep(1)
-        try:
-            autoware_container.kill()
-        except docker.errors.APIError as e:
-            print("[-] Couldn't kill Autoware container:", e)
-        except UnboundLocalError:
-            print("[-] Autoware container was not launched")
-        except:
-            print("[-] Autoware container was not killed for an unknown reason")
-            print("    Trying manually")
-            os.system("docker rm -f autoware-{}".format(os.getenv("USER")))
+            os.system("rosnode kill /recorder_bag")
+            while os.path.exists(f"/tmp/fuzzerdata/{c.USERNAME}/bagfile.lz4.bag.active"):
+                print("waiting for rosbag to dump data")
+                time.sleep(1)
+            try:
+                autoware_container.kill()
+            except docker.errors.APIError as e:
+                print("[-] Couldn't kill Autoware container:", e)
+            except UnboundLocalError:
+                print("[-] Autoware container was not launched")
+            except:
+                print("[-] Autoware container was not killed for an unknown reason")
+                print("    Trying manually")
+                os.system("docker rm -f autoware-{}".format(os.getenv("USER")))
         # Finalize simulation
         if not is_carla_running():
             retval = -1
@@ -349,11 +341,9 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
 
 def record_trace(npc_vehicles, exec_state, player, player_loc, state, town_map, trace_dict, trace_graph,
                  trace_graph_important):
-    nearby_dict = {}
     for vehicle_id in trace_dict:
         if player.id == vehicle_id:
             continue
-        nearby_dict[vehicle_id] = len(trace_dict[vehicle_id])
     # record nearby cars when test is end
     if town_map:
         player_waypoint = town_map.get_waypoint(player_loc, project_to_road=True,
@@ -396,7 +386,7 @@ def record_trace(npc_vehicles, exec_state, player, player_loc, state, town_map, 
         normalize_points(trace_graph_important[i], ego_start_loc)
     # change trace_graph_important from list to ndarray
     trace_graph_important = np.array(trace_graph_important)
-    return nearby_dict, trace_graph_important
+    return trace_graph_important
 
 
 def normalize_points(points, start_point):
@@ -607,7 +597,7 @@ def add_old_npc(npc_list, npc_vehicles, npc_now, agents_now, conf, found_frame, 
                 # if ego is stuck,check stuck duration
                 if npc.spawn_stuck_frame != state.stuck_duration:
                     continue
-            angle = get_angle_between_vectors(v1, v2)
+            angle = utils.get_angle_between_vectors(v1, v2)
             if angle < 90 and angle != 0:
                 # the better time will come later
                 continue
@@ -660,7 +650,7 @@ def mark_useless_npc(npc_now, conf, player_lane_id, player_loc, player_rot, play
         if vehicle.get_location().distance(player_loc) > 100 * math.sqrt(2):
             if is_in_front(player_rot.yaw, player_loc, npc.instance.get_location()):
                 continue
-            mark_npc(npc, 0)
+            utils.mark_npc(npc, 0)
             # delete_npc(npc, npc_vehicles, sensors, agents_now, npc_now)
             continue
         # 2. Delete vehicles that are topologically too far away
@@ -675,7 +665,7 @@ def mark_useless_npc(npc_now, conf, player_lane_id, player_loc, player_rot, play
         if not any(node in neighbors_A and node in neighbors_B for node in G.nodes()):
             if is_in_front(player_rot.yaw, player_loc, npc.instance.get_location()):
                 continue
-            mark_npc(npc, 1 * c.FRAME_RATE)
+            utils.mark_npc(npc, 1 * c.FRAME_RATE)
         # 3. Delete vehicles that stuck too long
         # Update: According to the reviewer's opinion, the weight is increased here to ensure scene coverage.
         if npc.stuck_duration > (conf.timeout * c.FRAME_RATE / 10):
@@ -687,7 +677,7 @@ def mark_useless_npc(npc_now, conf, player_lane_id, player_loc, player_rot, play
             velocity = carla.Vector3D(velocity_magnitude * direction_vector[0],
                                       velocity_magnitude * direction_vector[1], 0)
             npc.instance.set_target_velocity(velocity)
-            mark_npc(npc, 5 * c.FRAME_RATE)
+            utils.mark_npc(npc, 5 * c.FRAME_RATE)
 
 
 def get_player_info(cur_frame_id, goal_loc, player, sp, state, town_map, conf=None):
@@ -798,7 +788,7 @@ def check_destination(npc_vehicles, npc_now, agents_now, autoware_stuck, conf, g
                 else:
                     delete_indices.append(i)
         for index in delete_indices:
-            delete_npc(agents_now[index][2], npc_vehicles, sensors, agents_now, npc_now)
+            utils.delete_npc(agents_now[index][2], npc_vehicles, sensors, agents_now, npc_now)
     return break_flag, retval, autoware_stuck, s_started
 
 
@@ -892,7 +882,7 @@ def save_behavior_video(carla_error, state):
 
 
 def autoware_goal_publish(goal_loc, goal_rot, state, world):
-    goal_quaternion = quaternion_from_euler(0.0, 0.0, goal_rot.yaw)
+    goal_quaternion = utils.quaternion_from_euler(0.0, 0.0, goal_rot.yaw)
     goal_ox = goal_quaternion[0]
     goal_oy = goal_quaternion[1]
     goal_oz = goal_quaternion[2]
@@ -997,7 +987,7 @@ def autoware_launch(exec_state, conf, town_map, sp):
     exec_state.proc_state = Popen(["rostopic echo /decision_maker/state"],
                                   shell=True, stdout=PIPE, stderr=PIPE)
     # wait for autoware bridge to spawn player vehicle
-    check_autoware_status(world, 120)
+    utils.check_autoware_status(world, 120)
 
     # set_camera(conf, player, spectator)
     # Wait for Autoware (esp, for Town04)
@@ -1186,7 +1176,7 @@ def simulate_initialize(client, conf, weather_dict, world):
     client.set_timeout(10.0)
     if conf.no_traffic_lights:
         # set all traffic lights to green
-        set_traffic_lights_state(world, carla.TrafficLightState.Green)
+        utils.set_traffic_lights_state(world, carla.TrafficLightState.Green)
         world.freeze_all_traffic_lights(True)
 
     if conf.debug:
@@ -1236,7 +1226,7 @@ def spawn_npc(npc, npc_vehicle, npc_vehicles, npcs_now, agents_now, conf, max_wh
     y_offset = random.uniform(5, 10)
     wp_new_location = wp.location + carla.Location(x=x_offset * random.choice([-1, 1]),
                                                    y=y_offset * random.choice([-1, 1]))
-    new_agent = set_autopilot(npc_vehicle, c.BEHAVIOR_AGENT, npc.spawn_point.location,
+    new_agent = utils.set_autopilot(npc_vehicle, c.BEHAVIOR_AGENT, npc.spawn_point.location,
                               wp_new_location, world)
     agents_now.append((new_agent, npc_vehicle, npc))
     npc_vehicle.set_target_velocity(
@@ -1420,15 +1410,16 @@ def move_images(conf, state):
     # Define the start and end frame numbers
     start_frame = max(0, state.min_dist_frame - 100)  # Move up to 100 frames before min_dist_frame
     end_frame = state.min_dist_frame  # Move up to min_dist_frame
-    scenario_id= state.scenario_id
+    scenario_id = state.scenario_id
     generation_id = state.generation_id
     os.mkdir(os.path.join(conf.picture_dir, f"gid:{generation_id}_sid:{scenario_id}"))
     # Iterate over the specified range of frames
     for frame in range(start_frame, end_frame + 1):
+        images_frame = state.first_frame_id + frame
         # Construct the source file path
-        src_file = f"/tmp/fuzzerdata/{username}/top-{frame:05d}.jpg"
+        src_file = f"/tmp/fuzzerdata/{username}/top-{images_frame:05d}.jpg"
         # Construct the destination file path
-        dst_file = os.path.join(conf.picture_dir, f"gid:{generation_id}_sid:{scenario_id}/top-{frame:05d}.jpg")
+        dst_file = os.path.join(conf.picture_dir, f"gid:{generation_id}_sid:{scenario_id}/top-{images_frame:05d}.jpg")
         # Check if the source file exists
         if os.path.exists(src_file):
             # Move the file to the target directory

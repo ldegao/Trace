@@ -471,46 +471,51 @@ def filter_vehicles_in_frustum(vehicle_list, camera_transform, vertical_fov, ima
     return filtered_vehicles
 
 
-def serialize_vehicle(actor):
+def serialize_vehicle(actor, n=-1):
     """
     Extracts the physical properties of a carla.Actor object (vehicle) and returns them as a dictionary.
+    The parameter `n` indicates the number of decimal places for precision (-1 for full precision).
     """
+
+    def round_value(value):
+        return round(value, n) if n >= 0 else value
+
     # Get the bounding box (size) of the vehicle
     bounding_box = actor.bounding_box
     vehicle_size = {
-        'extent_x': bounding_box.extent.x,
-        'extent_y': bounding_box.extent.y,
-        'extent_z': bounding_box.extent.z
+        'extent_x': round_value(bounding_box.extent.x),
+        'extent_y': round_value(bounding_box.extent.y),
+        'extent_z': round_value(bounding_box.extent.z)
     }
 
     # Get the velocity vector
     velocity = actor.get_velocity()
     velocity_data = {
-        'x': velocity.x,
-        'y': velocity.y,
-        'z': velocity.z
+        'x': round_value(velocity.x),
+        'y': round_value(velocity.y),
+        'z': round_value(velocity.z)
     }
 
     # Get the angular velocity vector
     angular_velocity = actor.get_angular_velocity()
     angular_velocity_data = {
-        'x': angular_velocity.x,
-        'y': angular_velocity.y,
-        'z': angular_velocity.z
+        'x': round_value(angular_velocity.x),
+        'y': round_value(angular_velocity.y),
+        'z': round_value(angular_velocity.z)
     }
 
     # Get the vehicle's transform (position and rotation)
     transform = actor.get_transform()
     transform_data = {
         'location': {
-            'x': transform.location.x,
-            'y': transform.location.y,
-            'z': transform.location.z
+            'x': round_value(transform.location.x),
+            'y': round_value(transform.location.y),
+            'z': round_value(transform.location.z)
         },
         'rotation': {
-            'pitch': transform.rotation.pitch,
-            'yaw': transform.rotation.yaw,
-            'roll': transform.rotation.roll
+            'pitch': round_value(transform.rotation.pitch),
+            'yaw': round_value(transform.rotation.yaw),
+            'roll': round_value(transform.rotation.roll)
         }
     }
 
@@ -528,9 +533,9 @@ def serialize_vehicle(actor):
     return vehicle_data
 
 
-def update_vehicle_file(conf, state, closest_cars_list, player, npc_list):
-    # Initialize data structure
-    new_data = {
+def update_vehicle_file(state, closest_cars_list, player, npc_list, json_cache):
+    # Initialize data structure for the current frame
+    frame_data = {
         "min_dist": state.min_dist,
         str(state.num_frames): {
             "NPC": [],
@@ -538,31 +543,30 @@ def update_vehicle_file(conf, state, closest_cars_list, player, npc_list):
         }
     }
 
-    # Process closest_cars_list
-    # print(closest_cars_list)
+    # Process closest_cars_list to find NPCs close to the player
     for closest_cars in closest_cars_list:
         for npc in npc_list:
-            if npc.instance is not None:
-                if npc.instance.id == closest_cars.id:
-                    new_data[str(state.num_frames)]["NPC"].append(serialize_vehicle(closest_cars))
+            if npc.instance is not None and npc.instance.id == closest_cars.id:
+                frame_data[str(state.num_frames)]["NPC"].append(serialize_vehicle(closest_cars,2))
+
+    # Update json_cache with data for the current frame
+    if state.scenario_id not in json_cache:
+        json_cache[state.scenario_id] = {}
+    json_cache[state.scenario_id].update(frame_data)
+    return json_cache
+
+
+def write_json_cache_to_file(conf, state, json_cache):
+    # Define the file path for JSON output
     time_record_file = "{}/gid:{}_sid:{}.json".format(conf.time_record_dir, state.generation_id, state.scenario_id)
-    # Check if the file exists
-    if os.path.exists(time_record_file):
-        # If the file exists, load the current JSON data
-        with open(time_record_file, "r") as f:
-            try:
-                file_data = json.load(f)
-            except json.JSONDecodeError:
-                file_data = {}
-    else:
-        file_data = {}
 
-    # Update the file with new data
-    file_data.update(new_data)
-
-    # Write the updated data back to the file
+    # Write the entire json_cache data to the file
     with open(time_record_file, "w") as f:
-        json.dump(file_data, f, indent=4)
+        json.dump(json_cache.get(state.scenario_id, {}), f, indent=4)
+
+    # Return the JSON data and clear the cache for this scenario
+    output_data = json_cache.pop(state.scenario_id, None)
+    return output_data
 
 
 # def carla_ActorBlueprint_pickle(actor_blueprint):
