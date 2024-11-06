@@ -1,12 +1,14 @@
 import os
 import json
+import shutil
+
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import euclidean
 from scipy.sparse import dok_matrix
 from sklearn.manifold import MDS
-
+import random
 
 # Load JSON file
 def load_json(file_path):
@@ -100,27 +102,28 @@ def sample_sequence(sequence, sampling_rate=10):
     return sequence[::sampling_rate]
 
 
-import os
-import json
-import numpy as np
-
-
-def calculate_similarity_matrix(base_folder_path, sampling_rate=10):
+def calculate_similarity_matrix(base_folder_path, sampling_rate=10, min_frame_count=-1, file_sampling_rate=4):
     file_paths = []
     data_list = []
-    min_dists = []
 
-    # ?? JSON ??
     for root, dirs, files in os.walk(base_folder_path):
         for filename in files:
             if filename.endswith('.json') and 'time_record' in root:
+                # Sample files with probability 1/file_sampling_rate
+                if random.random() > (1 / file_sampling_rate):
+                    continue  # Skip this file with probability (1 - 1/file_sampling_rate)
+
                 file_path = os.path.join(root, filename)
                 data = load_json(file_path)
                 if data is None:
                     continue
 
-                min_dists.append(data.get("min_dist", 0.5))
+                # Extract frames and check against min_frame_count
                 extracted_frames = extract_frames(data)
+                if min_frame_count != -1 and len(extracted_frames) < min_frame_count:
+                    print(f"Skipping file {file_path} due to insufficient frames: {len(extracted_frames)}")
+                    continue
+
                 sampled_frames = sample_sequence(extracted_frames, sampling_rate=sampling_rate)
                 data_list.append(sampled_frames)
                 file_paths.append(file_path)
@@ -140,39 +143,79 @@ def calculate_similarity_matrix(base_folder_path, sampling_rate=10):
                     print(f"Similarity score between file {i} and file {j}: {score}")
                 except Exception as e:
                     print(f"Error calculating similarity between file {i} and file {j}: {e}")
-                    similarity_matrix[i, j] = similarity_matrix[j, i] = np.inf  # ????????? inf
+                    similarity_matrix[i, j] = similarity_matrix[j, i] = np.inf
 
     large_constant = np.max(similarity_matrix[np.isfinite(similarity_matrix)]) * 1.1
     similarity_matrix = np.nan_to_num(similarity_matrix, nan=0.0, posinf=large_constant)
 
     np.save('similarity_matrix.npy', similarity_matrix)
-    return similarity_matrix, min_dists, file_paths
+    with open('file_paths.json', 'w') as f:
+        json.dump(file_paths, f)
+    return similarity_matrix
+
 
 
 # Plot using MDS
-def plot_similarity_matrix(similarity_matrix, min_dists, file_paths):
-    mds = MDS(n_components=2, dissimilarity="precomputed", random_state=6)
-    points = mds.fit_transform(similarity_matrix)
+def plot_similarity_matrix(similarity_matrix):
+    mean_dists = np.mean(similarity_matrix, axis=1)
+    threshold = 3 * np.mean(mean_dists)
 
-    min_dists_normalized = (min_dists - np.min(min_dists)) / (np.max(min_dists) - np.min(min_dists))
+    non_outliers = mean_dists <= threshold
+    filtered_similarity_matrix = similarity_matrix[non_outliers][:, non_outliers]
+
+    mds = MDS(n_components=2, dissimilarity="precomputed", random_state=6)
+    points = mds.fit_transform(filtered_similarity_matrix)
+
+    cluster_center = np.mean(points, axis=0)
+
+    distances = np.linalg.norm(points - cluster_center, axis=1)
+    normalized_distances = (distances - np.min(distances)) / (np.max(distances) - np.min(distances))
 
     plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(points[:, 0], points[:, 1], c=min_dists_normalized, cmap='coolwarm', s=100, edgecolor='k')
-    plt.colorbar(scatter, label="min_dist")
-
-    for i, txt in enumerate(file_paths):
-        plt.annotate(os.path.basename(txt), (points[i, 0], points[i, 1]))
+    scatter = plt.scatter(points[:, 0], points[:, 1], c=normalized_distances, cmap='coolwarm', s=100, edgecolor='k')
+    plt.colorbar(scatter, label="Distance to Cluster Center")
 
     plt.xlabel("MDS: X")
     plt.ylabel("MDS: Y")
-    plt.title("Similarity of Scenarios")
+    plt.title("Similarity of Scenarios (Color by Distance to Cluster Center)")
     plt.show()
 
 
 # Main function
-def main(folder_path, sampling_rate=24):
-    similarity_matrix, min_dists, file_paths = calculate_similarity_matrix(folder_path, sampling_rate=sampling_rate)
-    plot_similarity_matrix(similarity_matrix, min_dists, file_paths)
+def main(folder_path, sampling_rate=48):
+    similarity_matrix = calculate_similarity_matrix(folder_path, sampling_rate=sampling_rate, min_frame_count=100, file_sampling_rate=2)
+    plot_similarity_matrix(similarity_matrix)
+
+
+def test():
+    # Assuming similarity_matrix.npy is loaded, and file_paths contains JSON file paths
+
+    # Load similarity matrix and other data
+    similarity_matrix = np.load('similarity_matrix.npy')  # Assuming precomputed similarity matrix
+    file_paths = load_json('file_paths.json')  # Assuming precomputed file paths
+
+    # MDS and plot as before
+    mds = MDS(n_components=2, dissimilarity="precomputed", random_state=6)
+    points = mds.fit_transform(similarity_matrix)
+
+    # Calculate distances to cluster center
+    cluster_center = np.mean(points, axis=0)
+    distances = np.linalg.norm(points - cluster_center, axis=1)
+    normalized_distances = (distances - np.min(distances)) / (np.max(distances) - np.min(distances))
+
+    # Select 10 bluest, non-overlapping points
+    sorted_indices = np.argsort(normalized_distances)
+    selected_indices = sorted_indices[:10]  # Get indices of the 10 points closest to the cluster center
+
+    # Print file names and copy to new folder
+    output_folder = 'json_out'
+    os.makedirs(output_folder, exist_ok=True)
+
+    print("Selected files for blue, non-overlapping points:")
+    for idx in selected_indices:
+        file_path = file_paths[idx]
+        print(file_path)
+        shutil.copy(file_path, os.path.join(output_folder, os.path.basename(file_path)))
 
 
 # Execute main function

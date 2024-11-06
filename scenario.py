@@ -47,7 +47,7 @@ class ScenarioFitness(deap.base.Fitness):
     """
     # minimize the closest distance between a pair of ADC
     # for test
-    weights = (-1.0, -1.0)
+    weights = (-1.0, -1.0, 5.0)
     """
     Todo: note: 
     """
@@ -83,10 +83,12 @@ class Scenario:
         self.weather["angle"] = 0
         self.weather["altitude"] = 90
 
+
         self.npc_now = []
         self.npc_list = []
         self.driving_quality_score = 0
         self.found_error = False
+        self.mutate_info = None
 
         self.sp = {
             "Location": (self.seed_data["sp_x"], self.seed_data["sp_y"], self.seed_data["sp_z"]),
@@ -215,31 +217,30 @@ class Scenario:
             #         os.path.join(self.conf.cam_dir, log_filename.replace(".json", "-top.mp4"))
             #     )
             # elif self.conf.agent_type == c.BEHAVIOR:
-            if True:
-                if error:
-                    shutil.copyfile(
-                        os.path.join(self.conf.queue_dir, log_filename),
-                        os.path.join(self.conf.error_dir, log_filename)
-                    )
+            if error:
                 shutil.copyfile(
-                    f"/tmp/fuzzerdata/{self.username}/front.mp4",
-                    os.path.join(
-                        self.conf.cam_dir,
-                        log_filename.replace(".json", "-front.mp4")
-                    )
+                    os.path.join(self.conf.queue_dir, log_filename),
+                    os.path.join(self.conf.error_dir, log_filename)
                 )
+            shutil.copyfile(
+                f"/tmp/fuzzerdata/{self.username}/front.mp4",
+                os.path.join(
+                    self.conf.cam_dir,
+                    log_filename.replace(".json", "-front.mp4")
+                )
+            )
 
-                shutil.copyfile(
-                    f"/tmp/fuzzerdata/{self.username}/top.mp4",
-                    os.path.join(
-                        self.conf.cam_dir,
-                        log_filename.replace(".json", "-top.mp4")
-                    )
+            shutil.copyfile(
+                f"/tmp/fuzzerdata/{self.username}/top.mp4",
+                os.path.join(
+                    self.conf.cam_dir,
+                    log_filename.replace(".json", "-top.mp4")
                 )
+            )
             print("save video done")
         except FileNotFoundError:
             print("FileNotFoundError")
-            os._exit(0)
+            # os._exit(0)
 
     def save_trace_point(self, trace_graph_points, param, log_filename):
         output_filename = log_filename.replace(".json", ".txt")

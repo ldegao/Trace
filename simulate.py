@@ -303,10 +303,10 @@ def simulate(conf, state, exec_state, sp, wp, weather_dict, npc_list):
             time.sleep(1)
             os.system("rosnode kill /recorder_video_top")
             time.sleep(1)
-            os.system("rosnode kill /recorder_bag")
-            while os.path.exists(f"/tmp/fuzzerdata/{c.USERNAME}/bagfile.lz4.bag.active"):
-                print("waiting for rosbag to dump data")
-                time.sleep(1)
+            # os.system("rosnode kill /recorder_bag")
+            # while os.path.exists(f"/tmp/fuzzerdata/{c.USERNAME}/bagfile.lz4.bag.active"):
+            #     print("waiting for rosbag to dump data")
+            #     time.sleep(1)
             try:
                 autoware_container.kill()
             except docker.errors.APIError as e:

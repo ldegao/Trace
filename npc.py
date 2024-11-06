@@ -39,6 +39,7 @@ class NPC:
         self.npc_bp_id = npc_bp_id
         self.fresh = True
         self.instance = None
+        self.instance_id = -1
         self.sensor_collision = None
         self.sensor_lane_invasion = None
         self.stuck_duration = 0
@@ -117,6 +118,7 @@ class NPC:
 
     def set_instance(self, npc_vehicle):
         self.instance = npc_vehicle
+        self.instance_id = npc_vehicle.id
 
     def get_waypoint(self, town_map):
         if self.instance is None:

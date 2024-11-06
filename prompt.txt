@@ -1,0 +1,55 @@
+You are a traffic analyst located in China, and you are about to perform an autonomous driving scene analysis task. I will provide you with (1) a snapshot of a scene, including the current location, speed, angular acceleration, etc., of the autonomous driving vehicle (ADS, represented as the player object in JSON) and background vehicles (NPC objects); and (2) descriptions of existing snapshots. You will analyze the interaction and interference between other vehicles (objects) and the ADS vehicle in this scene based on Chinese traffic regulations and accident scenarios from your knowledge base, identifying and describing the most critical aspects.
+There is no any other scenario database available except ?Scenario-dict? for this analysis. You should rely solely on the information I provide in the current scene description and must not invent any new database or scenario IDs except?Scenario-dict?.
+
+Carefully analyze the description of the existing snapshots to see if there are similar dangerous scenarios, and calculate similarity scores based on a standardized evaluation.
+For "thinking steps," keep auxiliary questions in mind without providing specific answers. Answer each question below in JSON format under specific keys.
+?Output format requirement?:
+DO NOT ADD ANY ADDITIONAL INFOMATION, just provide a single JSON object with four main keys, each corresponding to the answers for the respective questions below:
+{ "answer1": { /* Answer for Question 1 */ }, "answer2": { /* Answer for Question 2 */ }, "answer3": { /* Answer for Question 3 */ }}
+Questions
+Thinking Step 1: Analyze the possible types of accidents that this snapshot may lead to based on the information given. Select one or more appropriate types from the following: rear-end collision, side collision (lane change), intersection collision, reversing collision, rollover accident, scraping accident, pedestrian-related accident, speeding-related accident, and blind spot collision.
+
+Thinking Step 2: Identify the background vehicle most likely to cause an accident in the scene (i.e., the greatest risk source) and internally evaluate the reasons for this risk.
+
+Question 1: Based on the snapshot described above, generate a concise but detailed description explaining potential dangers and interactions, and extract the key data points.
+Output: Record the following key information in JSON format:
+{
+  "Description": "Generated description of the scenario",
+  "ADS Vehicle": {
+    "Location": "(x, y)",
+    "Speed": "speed_value km/h",
+    "Angular Acceleration": "angular_acceleration_value rad/s^2"
+  },
+  "Highest Risk Background Vehicle": {
+    "Vehicle ID": "vehicle_id",
+    "Location": "(x, y)",
+    "Speed": "speed_value km/h",
+    "Angular Acceleration": "angular_acceleration_value rad/s^2",
+    "Relative Distance": "distance_value m"
+  },
+  "Potential Accident Data": {
+    "Collision Severity": ,// Between 0 to 100
+    "ADS Vehicle Impact Position": "collision_part"  // Choose from: "Front Bumper", "Rear Bumper", "Left Front Fender", "Right Front Fender", "Left Door", "Right Door", "Left Rear Fender", "Right Rear Fender"
+  }}
+Thinking Step 1: Compare the current snapshot to existing snapshots in the ?Scenario-dict? (restricted to those in the current prompt) and calculate similarity scores. Evaluate and score (0-10) the following aspects: position similarity, speed similarity, angular acceleration similarity, and predicted accident similarity. Also, explain the reasons for the scores.
+Thinking Step 2: Determine which dimensions have a greater impact on the overall similarity among position similarity, velocity similarity, angular acceleration similarity, and expected accident similarity. Please assign a weight to each similarity dimension and calculate the overall similarity score based on these weights.
+Question 2: Based on the current snapshot and snapshots from the ?Scenario-dict?  restricted to those in the current prompt, calculate the overall similarity score. Use the previously considered position similarity, speed similarity, angular acceleration similarity, and predicted accident similarity. Finally, provide an overall similarity score (0-100 points).
+Output: Provide the following JSON format:
+{
+  "Overall Similarity": "overall similarity score", // Between 0 to 100
+  "Most_Similar_Scenario": "scenario_id" // Choose from key of Scenario-database
+}
+
+
+Thinking step 1: "Please think about which background vehicles in the existing scene have similar characteristics (position, speed, angular acceleration, etc.) that lead to low scene diversity? By analyzing these similarities, determine which feature changes (position, speed, angular acceleration) will more effectively increase diversity." 
+Thinking step 2: "Please analyze the distribution and dynamics of background vehicles in the scene, and determine which specific vehicle feature changes (such as position and angular acceleration) will have the greatest impact on the behavior of the ADS vehicle and the overall diversity of the scene. Please consider whether changing its position or speed can introduce new behavior patterns or new potential interactions."
+Question 3: Analyze how to increase the difference from existing scenarios to enhance diversity, and evaluate which background vehicle data can be modified to increase differentiation.
+Output: Modified background vehicle JSON format as follows:
+{
+  "Modified Background Vehicle for diversity": {
+    "Vehicle ID": "vehicle_id",
+    "Location": "(new x, y)",
+    "Speed": "new speed km/h",
+    "Angular Acceleration": "new angular acceleration rad/s^2"
+  }}
+____

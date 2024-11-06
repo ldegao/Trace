@@ -30,6 +30,3 @@ venv/
 *.pth
 *.npy
 *.json
-
-# api
-api.json

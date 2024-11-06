@@ -27,11 +27,15 @@ import cProfile
 import logging
 import os
 import pdb
+import re
 import sys
 import time
 import random
 import argparse
 import copyreg
+from collections import OrderedDict
+
+import gpt
 import json
 # from collections import deque
 import concurrent.futures
@@ -70,6 +74,20 @@ client, world, G, blueprint_library, town_map = None, None, None, None, None
 accumulated_trace_graphs = []
 autoware_container = None
 exec_state = states.ExecState()
+Scenario_database = {}
+bottleneck = False
+
+with open("api.json") as f:
+    api_config = json.load(f)
+API_KEY = api_config.get("OPENAI_API_KEY")
+PROXY = {
+    "http": "http://127.0.0.1:8080",
+    "https": "http://127.0.0.1:8080"
+}
+
+prompt_file = "prompt.txt"
+with open(prompt_file, 'r') as f:
+    prompt = f.read()
 
 
 # monitor carla
@@ -199,7 +217,7 @@ def set_args():
                                  help="density of vehicles,1.0 means add 1 bg vehicle per 1 sec")
     argument_parser.add_argument("--town", default=3, type=int,
                                  help="Test on a specific town (e.g., '--town 3' forces Town03)")
-    argument_parser.add_argument("--timeout", default="20", type=int,
+    argument_parser.add_argument("--timeout", default="60", type=int,
                                  help="Seconds to timeout if vehicle is not moving")
     argument_parser.add_argument("--no-speed-check", action="store_true")
     argument_parser.add_argument("--no-lane-check", action="store_true")
@@ -211,14 +229,37 @@ def set_args():
     return argument_parser
 
 
+def extract_answer1_overall_similarity(response_text):
+    """
+    Extracts answer1 description and Overall Similarity from raw response text using regular expressions.
+
+    Parameters:
+    - response_text: The raw text of the JSON response
+
+    Returns:
+    - answer1_description: Extracted description of answer1
+    - overall_similarity: Extracted similarity score (integer) or None if not found
+    """
+    # Regular expression to extract answer1 description
+    answer1_match = re.search(r'"answer1":\s*\{\s*"Description":\s*"([^"]+)', response_text)
+    answer1_description = answer1_match.group(1) if answer1_match else "Description not available"
+
+    # Regular expression to extract Overall Similarity
+    similarity_match = re.search(r'"Overall Similarity":\s*"(\d+)', response_text)
+    overall_similarity = int(similarity_match.group(1)) if similarity_match else None
+
+    return answer1_description, overall_similarity
+
+
 def evaluation(ind: Scenario):
     global autoware_container
+    global Scenario_database
     min_dist = 99999
     nova = 0
+    overall_similarity = 0
     g_name = f'Generation_{ind.generation_id:05}'
     s_name = f'Scenario_{ind.scenario_id:05}'
-    # todo: run test here
-    # for test
+    # run test here
     mutate_weather_fixed(ind)
     signal.alarm(15 * 60)  # timeout after 15 min
     print("timeout after 15 min")
@@ -232,15 +273,39 @@ def evaluation(ind: Scenario):
             print("[-] Fatal error occurred during test")
             exit(0)
         min_dist = ind.state.min_dist
+
         for i in range(1, len(ind.state.speed)):
             acc = abs(ind.state.speed[i] - ind.state.speed[i - 1])
             nova += acc
         nova = nova / len(ind.state.speed)
+        # gpt
+        scenario_description = str(
+            gpt.get_frame_data(f"./data/output/time_record/gid:{ind.generation_id}_sid:{ind.scenario_id}.json",
+                               ind.state.min_dist_frame)).replace("\n", "").replace(' ', '')
+        question = prompt + "\n scenario snapshot:\n" + str(
+            scenario_description + "\n___\n Scenario-dict\n" + str(Scenario_database))
+        response = gpt.call_gpt(question, model_version="gpt-4-turbo", max_tokens=1500)
+        print("Response:", response)
+        response_json = gpt.extract_json(response)
+        if response_json is not None:
+            Scenario_database = gpt.add_answer1_to_database(response_json, Scenario_database, 30)
+            overall_similarity = int(gpt.get_overall_similarity(response_json))
+            answer3_vehicle_info = gpt.get_answer3_vehicle_info(response_json)
+            print("Overall Similarity:", overall_similarity)
+            print("Answer3 Vehicle Info:", answer3_vehicle_info)
+        else:
+            answer1_description, overall_similarity = extract_answer1_overall_similarity(response)
+            new_key = str(int(max(Scenario_database.keys(), key=int)) + 1) if Scenario_database else "0"
+            Scenario_database[new_key] = answer1_description
+            Scenario_database = OrderedDict(Scenario_database)
+            answer3_vehicle_info = {}  # Leave answer3_vehicle_info empty
+            print("Extracted Answer1 Description:", answer1_description)
+            print("Extracted Overall Similarity:", overall_similarity)
+            print("Answer3 Vehicle Info:", answer3_vehicle_info)
+
+        ind.mutate_info = answer3_vehicle_info
         # reload scenario state
         ind.state = states.ScenarioState()
-        # profiler.disable()  #
-        # profiler.dump_stats('profile_stats.prof')
-        # pdb.set_trace()
     except Exception as e:
         if e == TimeoutError:
             print("[-] simulation hanging. abort.")
@@ -262,39 +327,51 @@ def evaluation(ind: Scenario):
     # mutation loop ends
     if ind.found_error:
         print("[-]error detected. start a new cycle with a new seed")
-    return min_dist, nova
+    return min_dist, nova, 100 - overall_similarity
 
 
 # MUTATION OPERATOR
 
 
-def mut_npc_list(ind: List[NPC]):
-    if len(ind) <= 1:
-        return ind
+def mut_npc_list(ind: Scenario):
+    global town_map
+    if len(ind.npc_list) <= 1:
+        return ind.npc_list
+    if bottleneck:
+        # mutate the chosen one by GPT
+        for npc in ind.npc_list:
+            if npc.instance_id == ind.mutate_info["Vehicle ID"]:
+                npc.speed = ind.mutate_info["Speed"]
+                if town_map is not None:
+                    location = carla.Location(x=ind.mutate_info["Location"][0], y=ind.mutate_info["Location"][1],
+                                              z=0.5)
+                    waypoint = town_map.get_waypoint(location, project_to_road=True,
+                                                     lane_type=carla.libcarla.LaneType.Driving)
+                    npc.spawn_point = waypoint
+                return ind.npc_list
+        return ind.npc_list
     mut_pb = random.random()
-    random_index = random.randint(0, len(ind) - 1)
+    random_index = random.randint(0, len(ind.npc_list) - 1)
     # remove a random 1
     if mut_pb < 0.1:
-        ind.pop(random_index)
-        return ind
+        ind.npc_list.pop(random_index)
+        return ind.npc_list
     # add a random 1
     if mut_pb < 0.4:
-        template_npc = ind[random_index]
-        new_ad = NPC.get_npc_by_one(template_npc, town_map, len(ind) - 1)
-        ind.append(new_ad)
-        return ind
+        template_npc = ind.npc_list[random_index]
+        new_ad = NPC.get_npc_by_one(template_npc, town_map, len(ind.npc_list) - 1)
+        ind.npc_list.append(new_ad)
+        return ind.npc_list
     # mutate a random agent
-    template_npc = ind[random_index]
-    new_ad = NPC.get_npc_by_one(template_npc, town_map, len(ind) - 1)
-    ind.append(new_ad)
-    ind.pop(random_index)
-    return ind
+    template_npc = ind.npc_list[random_index]
+    new_ad = NPC.get_npc_by_one(template_npc, town_map, len(ind.npc_list) - 1)
+    ind.npc_list.append(new_ad)
+    ind.npc_list.pop(random_index)
+    return ind.npc_list
 
 
 def mut_scenario(ind: Scenario):
-    mut_pb = random.random()
-    if mut_pb < 1:
-        ind.npc_list = mut_npc_list(ind.npc_list)
+    ind.npc_list = mut_npc_list(ind)
     return ind,
 
 
@@ -459,9 +536,84 @@ def print_all_attr(obj):
             print(f"Attribute: {attr_name}, Value: {attr_value}, Type: {attr_type}")
 
 
+def check_nondominated_stability(pareto_front, archive, generations=10, epsilon=1e-6):
+    """
+    Checks stability of non-dominated solutions across multiple generations.
+    pareto_front: The Pareto front (non-dominated solutions) of the current generation
+    archive: A list storing historical Pareto fronts
+    generations: Number of generations to compare
+    epsilon: Threshold to determine if there's a significant change in the Pareto front
+    """
+    archive.append(pareto_front)
+
+    if len(archive) < generations:
+        return False  # Not enough generations yet for comparison
+
+    # Compare differences over the recent generations
+    for i in range(-2, -generations - 1, -1):
+        prev_pareto = archive[i]
+        if any(abs(x.fitness.values[0] - y.fitness.values[0]) > epsilon for x, y in zip(pareto_front, prev_pareto)):
+            return False  # If the difference exceeds the threshold, there is no stagnation
+
+    return True
+
+
+def check_crowding_distance_stability(pareto_front, generations=10, epsilon=1e-6):
+    """
+    Checks stability of crowding distance.
+    pareto_front: The Pareto front (non-dominated solutions) of the current generation
+    generations: Number of generations to compare
+    epsilon: Threshold to determine if there's a significant change in crowding distance
+    """
+    # Calculate the average crowding distance for the current generation's Pareto front
+    crowding_distances = tools.sortNondominated(pareto_front, len(pareto_front))[0]
+    avg_crowding_distance = np.mean([ind.fitness.crowding_dist for ind in crowding_distances])
+
+    # If there are already `generations` number of records for crowding distance, compare them
+    if len(crowding_distances) >= generations:
+        recent_distances = [np.mean([ind.fitness.crowding_dist for ind in gen]) for gen in
+                            crowding_distances[-generations:]]
+        if all(abs(avg_crowding_distance - dist) < epsilon for dist in recent_distances):
+            return True  # Small changes in crowding distance indicate possible stagnation
+
+    return False
+
+
+def check_objective_variance_stability(pareto_front, generations=10, epsilon=1e-6):
+    """
+    Checks stability of objective function variance.
+    pareto_front: The Pareto front (non-dominated solutions) of the current generation
+    generations: Number of generations to compare
+    epsilon: Threshold to determine if there's a significant change in variance
+    """
+    # Calculate variance of the objectives in the current generation
+    objectives = np.array([ind.fitness.values for ind in pareto_front])
+    current_variance = np.var(objectives, axis=0)
+
+    # If there are already `generations` number of records for variance, compare them
+    if len(objectives) >= generations:
+        recent_variances = [np.var([ind.fitness.values for ind in gen], axis=0) for gen in objectives[-generations:]]
+        if all(np.all(np.abs(current_variance - var) < epsilon) for var in recent_variances):
+            return True  # Small changes in objective function variance indicate possible stagnation
+
+    return False
+
+
+def check_diversity_bottleneck(current_pareto_front, archive, generations=10, epsilon=1e-6):
+    checks = [
+        check_nondominated_stability(current_pareto_front, archive, generations=generations, epsilon=epsilon),
+        check_crowding_distance_stability(current_pareto_front, generations=generations, epsilon=epsilon),
+        check_objective_variance_stability(current_pareto_front, generations=generations, epsilon=epsilon)
+    ]
+
+    satisfied_conditions = sum(checks)
+
+    return satisfied_conditions >= 2
+
+
 def main(args=None):
     # STEP 0: init env
-    global client, world, G, blueprint_library, town_map
+    global client, world, G, blueprint_library, town_map, bottleneck
     logging.basicConfig(filename='./data/record.log', filemode='a', level=logging.INFO,
                         format='%(asctime)s - %(message)s')
     copyreg.pickle(carla.libcarla.Location, utils.carla_location_pickle, utils.carla_location_unpickle)
@@ -475,6 +627,7 @@ def main(args=None):
     # if conf.agent_type == c.AUTOWARE:
     #     autoware_launch(exec_state.world, conf, town)
     population = []
+    archive = []
     # GA Hyperparameters
     POP_SIZE = 5  # amount of population
     OFF_SIZE = 5  # number of offspring to produce
@@ -526,19 +679,25 @@ def main(args=None):
             d.scenario_id = index
         # Evaluate the individuals with an invalid fitness
         invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+        current_pareto_front = [ind for ind in population if ind in hof.items]
         fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
         for ind, fit in zip(invalid_ind, fitnesses):
             ind.fitness.values = fit
         hof.update(offspring)
+
         # Select the next generation population
         population[:] = toolbox.select(population + offspring, POP_SIZE)
         record = stats.compile(population)
+
+        # Combined Bottleneck Detection
+        if check_diversity_bottleneck(current_pareto_front, archive, generations=10, epsilon=1e-6):
+            print("GA has entered a bottleneck, stopping evolution or taking alternative actions")
+            bottleneck = True
+        else:
+            bottleneck = False
         logbook.record(gen=curr_gen, **record)
         print(logbook.stream)
         # Save directory for trace graphs
-
-
-
 
 
 if __name__ == "__main__":

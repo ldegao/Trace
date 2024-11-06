@@ -259,8 +259,10 @@ def run_test(sim_port, target, density, town, duration):
             # Perform additional actions or logging as needed
         except KeyboardInterrupt as e:
             # Capture any other general exceptions
-            print(f"Unexpected exception caught: {e}")
+            print(f"KeyboardInterrupt")
             return
+        else:
+            print(f"Unexpected exception caught")
 
         os.chdir(current_dir)
         # Check if the Docker container is still running

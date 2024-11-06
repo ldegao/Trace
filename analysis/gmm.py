@@ -150,7 +150,7 @@ def remove_outliers_iqr(df, columns):
 
 
 
-def train_and_plot_gmm_with_correct_order_and_scatter(df, n_components=2):
+def train_and_plot_gmm_with_correct_order_and_scatter(df, n_components=1):
     # Step 1: Remove outliers using IQR method
     df = remove_outliers_iqr(df, ['avg_speed', 'avg_acceleration', 'min_x_dist', 'min_y_dist', 'ttc'])
 
