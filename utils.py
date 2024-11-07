@@ -536,7 +536,7 @@ def serialize_vehicle(actor, n=-1):
 def update_vehicle_file(state, closest_cars_list, player, npc_list, json_cache):
     # Initialize data structure for the current frame
     frame_data = {
-        "min_dist": state.min_dist,
+        "min_dist_frame": state.min_dist_frame,
         str(state.num_frames): {
             "NPC": [],
             "player": serialize_vehicle(player)

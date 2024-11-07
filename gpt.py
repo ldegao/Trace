@@ -1,3 +1,4 @@
+import glob
 import os
 import random
 import re
@@ -103,7 +104,7 @@ def get_last_frame_data(json_path):
     return data[last_frame_key]
 
 
-def get_frame_data(json_path, frame_number):
+def get_frame_data(json_path, frame_number=-1):
     with open(json_path, 'r') as f:
         data = json.load(f)
 
@@ -225,6 +226,43 @@ def get_overall_similarity(response_json):
         return None
 
 
+def modify_json_file(json_file, mutate_info):
+    # Load JSON file
+    with open(json_file, 'r') as f:
+        data = json.load(f)
+    # Extract vehicle information from mutate_info
+    vehicle_id = mutate_info["Vehicle ID"]
+    new_location = mutate_info["Location"]
+    new_speed = mutate_info["Speed"]
+
+    # Recursively search and modify NPCs
+    for key, value in data.items():
+        if isinstance(value, dict) and "NPC" in value:
+            for npc in value["NPC"]:
+                if npc["id"] == vehicle_id:
+                    # Modify velocity
+                    velocity = npc.get("velocity", {})
+                    current_speed = (velocity.get("x", 0) ** 2 + velocity.get("y", 0) ** 2 + velocity.get("z",
+                                                                                                          0) ** 2) ** 0.5
+                    if current_speed != 0:
+                        scale = new_speed / current_speed
+                        npc["velocity"]["x"] *= scale
+                        npc["velocity"]["y"] *= scale
+                        npc["velocity"]["z"] *= scale
+                    else:
+                        # If current speed is zero, set velocity based on new speed equally divided among components
+                        direction = [1, 0, 0]  # Default direction if current speed is zero
+                        npc["velocity"]["x"] = new_speed * direction[0]
+                        npc["velocity"]["y"] = new_speed * direction[1]
+                        npc["velocity"]["z"] = new_speed * direction[2]
+
+                    # Modify location (keeping rotation unchanged)
+                    if "transform" in npc and "location" in npc["transform"]:
+                        npc["transform"]["location"]["x"] = new_location["x"]
+                        npc["transform"]["location"]["y"] = new_location["y"]
+                    break
+    return data
+
 def get_answer3_vehicle_info(response_json):
     if "answer3" in response_json:
         try:
@@ -242,11 +280,43 @@ def get_answer3_vehicle_info(response_json):
         return None
 
 
-# database = {
-# }
-#
-# question = prompt + "\n scenario snapshot:\n" + str(
-#     get_frame_data("gid:1_sid:1.json", -1)) + "\n scenario snapshot database:\n" + str(database)
-#
-# response = call_gpt(question, model_version="gpt-4-turbo", max_tokens=1500)
-# print("Response:", response)
+def get_all_json_files(base_dir):
+    json_files = []
+    for root, dirs, files in os.walk(base_dir):
+        dirs.sort()
+        files.sort()
+        for filename in files:
+            if filename.endswith('.json'):
+                json_files.append(os.path.join(root, filename))
+    return json_files
+
+
+if __name__ == "__main__":
+    Scenario_database = {}
+    json_files = get_all_json_files('./json_out')
+    if not os.path.exists('./new_json_files'):
+        os.mkdir('./new_json_files')
+    for json_file in json_files:
+        print(f"Processing {json_file}...")
+        try:
+            # gpt
+            scenario_description = str(get_frame_data(json_file)).replace("\n", "").replace(' ', '')
+            question = prompt + "\n scenario snapshot:\n" + str(
+                scenario_description + "\n___\n Scenario-dict\n" + str(Scenario_database))
+            response = call_gpt(question, model_version="gpt-4-turbo", max_tokens=1500)
+            print("Response:", response)
+            response_json = extract_json(response)
+            Scenario_database = add_answer1_to_database(response_json, Scenario_database, 30)
+            answer3_vehicle_info = get_answer3_vehicle_info(response_json)
+            print("Answer3 Vehicle Info:", answer3_vehicle_info)
+            mutate_info = answer3_vehicle_info
+            data = modify_json_file(json_file, mutate_info)
+            # Save modified JSON file
+            new_json_file = json_file.replace('.json', '_modified.json')
+            with open(new_json_file, 'w') as f:
+                json.dump(data, f, indent=4)
+            print(f"Modified JSON file saved as: {new_json_file}")
+        # reload scenario state
+        except Exception as e:
+            print(f"Error processing {json_file}: {e}")
+

@@ -1,3 +1,4 @@
+import glob
 import os
 import json
 import shutil
@@ -9,6 +10,7 @@ from scipy.spatial.distance import euclidean
 from scipy.sparse import dok_matrix
 from sklearn.manifold import MDS
 import random
+
 
 # Load JSON file
 def load_json(file_path):
@@ -25,14 +27,20 @@ def load_json(file_path):
     return None
 
 
-# Extract frames from the data, treating the player as a regular NPC
-def extract_frames(data):
+def extract_frames(data, frame=50, length=10):
+    half_len = length // 2
+    time_steps = []
     frames = []
-    for time_step, details in sorted(data.items()):
+    for i in range(frame - half_len, frame + half_len + 1):
+        time_step = f"{i}"
+        time_steps.append(time_step)
+
+    for time_step in time_steps:
+        details = data[time_step]
         if not isinstance(details, dict) or not details.get("player"):
             continue
 
-        frame = {'npcs': []}
+        frame_data = {'npcs': []}
         player_position = details["player"]["transform"]["location"]
         player_velocity = details["player"]["velocity"]
         player_data = {
@@ -40,7 +48,7 @@ def extract_frames(data):
             'velocity': np.array([player_velocity['x'], player_velocity['y'], player_velocity['z']]),
             'type': 'player'
         }
-        frame['npcs'].append(player_data)
+        frame_data['npcs'].append(player_data)
 
         if "NPC" in details and isinstance(details["NPC"], list):
             for npc in details["NPC"]:
@@ -51,9 +59,9 @@ def extract_frames(data):
                     'velocity': np.array([npc_velocity['x'], npc_velocity['y'], npc_velocity['z']]),
                     'type': 'npc'
                 }
-                frame['npcs'].append(npc_data)
+                frame_data['npcs'].append(npc_data)
 
-        frames.append(frame)
+        frames.append(frame_data)
     return frames
 
 
@@ -98,20 +106,17 @@ def graph_dtw(sequence1, sequence2, k=5):
 
 
 # Sampling function to reduce the number of frames
-def sample_sequence(sequence, sampling_rate=10):
-    return sequence[::sampling_rate]
 
 
-def calculate_similarity_matrix(base_folder_path, sampling_rate=10, min_frame_count=-1, file_sampling_rate=4):
+def calculate_similarity_matrix(base_folder_path):
     file_paths = []
     data_list = []
 
     for root, dirs, files in os.walk(base_folder_path):
+        dirs.sort()
+        files.sort()
         for filename in files:
             if filename.endswith('.json') and 'time_record' in root:
-                # Sample files with probability 1/file_sampling_rate
-                if random.random() > (1 / file_sampling_rate):
-                    continue  # Skip this file with probability (1 - 1/file_sampling_rate)
 
                 file_path = os.path.join(root, filename)
                 data = load_json(file_path)
@@ -120,12 +125,7 @@ def calculate_similarity_matrix(base_folder_path, sampling_rate=10, min_frame_co
 
                 # Extract frames and check against min_frame_count
                 extracted_frames = extract_frames(data)
-                if min_frame_count != -1 and len(extracted_frames) < min_frame_count:
-                    print(f"Skipping file {file_path} due to insufficient frames: {len(extracted_frames)}")
-                    continue
-
-                sampled_frames = sample_sequence(extracted_frames, sampling_rate=sampling_rate)
-                data_list.append(sampled_frames)
+                data_list.append(extracted_frames)
                 file_paths.append(file_path)
 
     num_files = len(file_paths)
@@ -149,19 +149,26 @@ def calculate_similarity_matrix(base_folder_path, sampling_rate=10, min_frame_co
     similarity_matrix = np.nan_to_num(similarity_matrix, nan=0.0, posinf=large_constant)
 
     np.save('similarity_matrix.npy', similarity_matrix)
-    with open('file_paths.json', 'w') as f:
-        json.dump(file_paths, f)
-    return similarity_matrix
+
+    return similarity_matrix  # Return both similarity matrix and file paths
 
 
-
-# Plot using MDS
+# Modify the plot_similarity_matrix function to differentiate points based on file path
 def plot_similarity_matrix(similarity_matrix):
-    mean_dists = np.mean(similarity_matrix, axis=1)
-    threshold = 3 * np.mean(mean_dists)
+    file_paths = []
+    for root, dirs, files in os.walk('../data'):
+        dirs.sort()
+        files.sort()
+        for filename in files:
+            if filename.endswith('.json') and 'time_record' in root:
+                file_paths.append(os.path.join(root, filename))
 
-    non_outliers = mean_dists <= threshold
-    filtered_similarity_matrix = similarity_matrix[non_outliers][:, non_outliers]
+    # mean_dists = np.mean(similarity_matrix, axis=1)
+    # threshold = 3 * np.mean(mean_dists)
+    # non_outliers = mean_dists <= threshold
+    # filtered_similarity_matrix = similarity_matrix[non_outliers][:, non_outliers]
+    # filtered_file_paths = [file_paths[i] for i in range(len(file_paths)) if non_outliers[i]]
+    filtered_similarity_matrix = similarity_matrix
 
     mds = MDS(n_components=2, dissimilarity="precomputed", random_state=6)
     points = mds.fit_transform(filtered_similarity_matrix)
@@ -172,19 +179,46 @@ def plot_similarity_matrix(similarity_matrix):
     normalized_distances = (distances - np.min(distances)) / (np.max(distances) - np.min(distances))
 
     plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(points[:, 0], points[:, 1], c=normalized_distances, cmap='coolwarm', s=100, edgecolor='k')
-    plt.colorbar(scatter, label="Distance to Cluster Center")
 
+    # Differentiating points by file path
+    tmp_points = []
+    save_points = []
+    tmp_normalized_distances = []
+    save_normalized_distances = []
+
+    for i, file_path in enumerate(file_paths):
+        if 'tmp' in file_path:
+            tmp_points.append(i)
+            tmp_normalized_distances.append(normalized_distances[i])
+        elif 'save' in file_path:
+            save_points.append(i)
+            save_normalized_distances.append(normalized_distances[i])
+
+    plt.scatter(points[tmp_points, 0], points[tmp_points, 1],
+                c=tmp_normalized_distances, cmap='coolwarm', s=100,
+                edgecolor='red', linewidth=2, label='TMP Files')
+
+    plt.scatter(points[save_points, 0], points[save_points, 1],
+                c=save_normalized_distances, cmap='coolwarm', s=100,
+                edgecolor='black', linewidth=2, label='Save Files')
+
+    plt.colorbar(label="Distance to Cluster Center")
     plt.xlabel("MDS: X")
     plt.ylabel("MDS: Y")
     plt.title("Similarity of Scenarios (Color by Distance to Cluster Center)")
+    plt.legend()
     plt.show()
 
 
-# Main function
-def main(folder_path, sampling_rate=48):
-    similarity_matrix = calculate_similarity_matrix(folder_path, sampling_rate=sampling_rate, min_frame_count=100, file_sampling_rate=2)
-    plot_similarity_matrix(similarity_matrix)
+def get_all_json_files(base_dir):
+    json_files = []
+    for root, dirs, files in os.walk(base_dir):
+        dirs.sort()
+        files.sort()
+        for filename in files:
+            if filename.endswith('.json') and 'time_record' in root:
+                json_files.append(os.path.join(root, filename))
+    return json_files
 
 
 def test():
@@ -192,7 +226,7 @@ def test():
 
     # Load similarity matrix and other data
     similarity_matrix = np.load('similarity_matrix.npy')  # Assuming precomputed similarity matrix
-    file_paths = load_json('file_paths.json')  # Assuming precomputed file paths
+    file_paths = get_all_json_files('../data')  # Assuming file paths are known
 
     # MDS and plot as before
     mds = MDS(n_components=2, dissimilarity="precomputed", random_state=6)
@@ -218,7 +252,17 @@ def test():
         shutil.copy(file_path, os.path.join(output_folder, os.path.basename(file_path)))
 
 
+# Main function
+def main(folder_path):
+    try:
+        similarity_matrix = np.load('similarity_matrix.npy')
+    except FileNotFoundError:
+        similarity_matrix = calculate_similarity_matrix(folder_path)
+    plot_similarity_matrix(similarity_matrix)
+    # test()
+
+
 # Execute main function
 if __name__ == "__main__":
-    folder_path = '../data/save'  # Replace with the path to your JSON files folder
+    folder_path = '../data'  # Replace with the path to your JSON files folder
     main(folder_path)

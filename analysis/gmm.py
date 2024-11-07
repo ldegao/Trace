@@ -1,16 +1,14 @@
 import os
 import json
-
 import pandas as pd
-
-
 import numpy as np
 import matplotlib.pyplot as plt
-
+from matplotlib import image as mpimg
 from sklearn.preprocessing import StandardScaler
 from sklearn.mixture import GaussianMixture
 from sklearn.decomposition import PCA
 import pickle
+
 
 def gather_data(base_folder_path):
     """
@@ -22,219 +20,239 @@ def gather_data(base_folder_path):
     Returns:
     - DataFrame with all gathered features.
     """
-    features = {
-        "timestamp": [],
-        "entity_id": [],
-        "entity_type": [],
-        "avg_speed": [],
-        "avg_acceleration": [],
-        "min_x_dist": [],
-        "min_y_dist": [],
-        "ttc": []
-    }
-    prev_velocity = {}
-
+    # Initialize an empty list to store the averaged features for each JSON file
+    data = []
     for root, dirs, files in os.walk(base_folder_path):
+        dirs.sort()
+        files.sort()
         for filename in files:
-            if filename.endswith('.json') and 'time_record' in root:
+            if 'error' in root:
+                continue
+            if filename.endswith('.json'):
                 filepath = os.path.join(root, filename)
                 print(f"Processing file: {filepath}")
 
-                try:
-                    with open(filepath, 'r') as f:
-                        data = json.load(f)
-                except json.JSONDecodeError:
-                    print(f"Error decoding JSON in file: {filepath}, skipping this file.")
-                    continue
+                # Calculate averaged features for each JSON file
+                avg_features = get_average_features_for_json(filepath)
 
-                for timestamp, value in data.items():
-                    if timestamp == "min_dist":
-                        continue  # Skip the "min_dist" key
+                if avg_features is not None:
+                    data.append(avg_features)
 
-                    # Process player data
-                    player_data = value.get("player", {})
-                    if player_data:
-                        process_entity_data(player_data, "player", int(timestamp), features, prev_velocity)
+    # Convert list of dictionaries to DataFrame
+    df = pd.DataFrame(data)
 
-                    # Process each NPC data
-                    npc_data = value.get("NPC", [])
-                    for npc in npc_data:
-                        process_entity_data(npc, "NPC", int(timestamp), features, prev_velocity)
-
-    # Convert to DataFrame
-    df = pd.DataFrame(features)
     # Drop rows with NaN or inf values
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.dropna(inplace=True)
 
+    print(f"Total number of data points in the DataFrame: {len(df)}")
     return df
 
 
-def process_entity_data(entity, entity_type, timestamp, features, prev_velocity):
-    """
-    Processes data for an individual entity (player or NPC), extracting relevant features
-    and appending them to the features dictionary.
+def get_average_features_for_json(filepath):
+    try:
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON in file: {filepath}, skipping this file.")
+        return None
 
-    Parameters:
-    - entity: dict, data for the entity.
-    - entity_type: str, type of the entity ("player" or "NPC").
-    - timestamp: int, timestamp of the current record.
-    - features: dict, feature storage dictionary to append data to.
-    - prev_velocity: dict, stores previous velocity values to calculate acceleration.
-    """
-    entity_id = entity.get("id")
+    total_features = {
+        "filename": filepath,
+        "avg_speed": 0.0,
+        "avg_acceleration": 0.0,
+        "min_x_dist": 0.0,
+        "min_y_dist": 0.0,
+        "ttc": 0.0
+    }
+    count = 0
 
-    # Extract location
-    location = entity.get("transform", {}).get("location", {})
-    x = location.get("x", 0)
-    y = location.get("y", 0)
-    z = location.get("z", 0)
+    for timestamp, value in data.items():
+        if timestamp in ["min_dist_frame", "min_dist"]:
+            continue
 
-    # Calculate minimum x and y distances
-    min_x_dist = x
-    min_y_dist = y
+        for entity_key in ["player", "NPC"]:
+            entity_data = value.get(entity_key, {})
+            if isinstance(entity_data, list):
+                for npc in entity_data:
+                    if add_entity_data_to_totals(npc, total_features):
+                        count += 1
+            elif isinstance(entity_data, dict):
+                if add_entity_data_to_totals(entity_data, total_features):
+                    count += 1
 
-    # Extract velocity and calculate speed
+    if count > 0:
+        for key in total_features:
+            if key != "filename":
+                total_features[key] /= count
+            else:
+                total_features[key] = filepath
+        return total_features
+    else:
+        return None
+
+
+def add_entity_data_to_totals(entity, total_features):
     velocity = entity.get("velocity", {})
     vx, vy, vz = velocity.get("x", 0), velocity.get("y", 0), velocity.get("z", 0)
 
-    # Check for NaN in velocity components
     if np.isnan(vx) or np.isnan(vy) or np.isnan(vz):
-        print(f"Invalid velocity data for entity {entity_id} at timestamp {timestamp}, skipping this entry.")
-        return
+        return False
 
-    # Calculate speed
     speed = np.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+    total_features["avg_speed"] += speed
 
-    # Calculate acceleration
-    prev_v = prev_velocity.get(entity_id, 0)
-    time_diff = timestamp - prev_velocity.get("prev_time", timestamp)
-    acceleration = (speed - prev_v) / time_diff if prev_v and time_diff != 0 else 0
-    prev_velocity[entity_id] = speed
-    prev_velocity["prev_time"] = timestamp
+    prev_speed = entity.get("prev_speed", 0)
+    time_diff = entity.get("time_diff", 1)
+    total_features["avg_acceleration"] += (speed - prev_speed) / time_diff if time_diff != 0 else 0
 
-    # Calculate TTC (assuming minimum distance in both x and y)
-    ttc = (x + y) / speed if speed != 0 else np.inf
+    location = entity.get("transform", {}).get("location", {})
+    total_features["min_x_dist"] += location.get("x", 0)
+    total_features["min_y_dist"] += location.get("y", 0)
 
-    # Append data to features
-    features["timestamp"].append(timestamp)
-    features["entity_id"].append(entity_id)
-    features["entity_type"].append(entity_type)
-    features["avg_speed"].append(speed)
-    features["avg_acceleration"].append(acceleration)
-    features["min_x_dist"].append(min_x_dist)
-    features["min_y_dist"].append(min_y_dist)
-    features["ttc"].append(ttc)
+    ttc = (location.get("x", 0) + location.get("y", 0)) / speed if speed != 0 else 10000
+    total_features["ttc"] += ttc if not np.isinf(ttc) else 0  # Handle inf by replacing it with 0
+
+    return True
 
 
-def remove_outliers_iqr(df, columns):
+def remove_outliers_iqr(df, columns, iqr_multiplier=3):
     """
     Remove outliers from specified columns in a DataFrame using the IQR method.
 
     Parameters:
     - df: DataFrame, the data to process
     - columns: list of str, the columns to apply the IQR method on
+    - iqr_multiplier: float, the multiplier for the IQR to determine outlier thresholds.
 
     Returns:
-    - DataFrame with outliers removed
+    - DataFrame with outliers removed.
     """
     for column in columns:
         Q1 = df[column].quantile(0.25)
         Q3 = df[column].quantile(0.75)
         IQR = Q3 - Q1
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
+        lower_bound = Q1 - iqr_multiplier * IQR
+        upper_bound = Q3 + iqr_multiplier * IQR
+
+        # Remove rows outside of bounds
         df = df[(df[column] >= lower_bound) & (df[column] <= upper_bound)]
+
+    print(f"Data size after outlier removal: {len(df)} rows.")
     return df
 
 
+def train_and_plot_gmm_with_correct_order_and_scatter(df,filename_print):
+    """
+    Trains a GMM model on given data, projects it to 2D space using PCA, and visualizes the density.
+    Prints the (x, y, p) for all points in the DataFrame.
 
-
-def train_and_plot_gmm_with_correct_order_and_scatter(df, n_components=1):
-    # Step 1: Remove outliers using IQR method
+    Parameters:
+    - df: DataFrame containing the features.
+    - target_json_filepath: str, path to a target JSON file to calculate its probability.
+    - n_components: int, number of GMM components.
+    """
+    # Step 1: Remove outliers
     df = remove_outliers_iqr(df, ['avg_speed', 'avg_acceleration', 'min_x_dist', 'min_y_dist', 'ttc'])
 
     # Step 2: Standardize the data
-    X = df[['avg_speed', 'avg_acceleration', 'min_x_dist', 'min_y_dist', 'ttc']].values
     scaler = StandardScaler()
-    X = scaler.fit_transform(X)
+    X = scaler.fit_transform(df[['avg_speed', 'avg_acceleration', 'min_x_dist', 'min_y_dist', 'ttc']].values)
 
-    # Step 3: Fit GMM on high-dimensional standardized data
-    gmm = GaussianMixture(n_components=n_components, random_state=0)
+    # Step 3: Fit GMM
+    gmm = GaussianMixture(n_components=1, random_state=0)
     gmm.fit(X)
-
-    # Step 4: Save the trained GMM model
     with open("trained_gmm_model.pkl", "wb") as f:
         pickle.dump(gmm, f)
-    print("GMM model saved as trained_gmm_model.pkl")
 
-    # Step 5: Project original data to 2D space using PCA
+    # Step 4: PCA transformation
     pca = PCA(n_components=2)
     X_pca = pca.fit_transform(X)
 
-    # Step 6: Plot scatter plot of PCA-transformed data
-    plt.figure(figsize=(8, 6))
-    plt.scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.6, edgecolor='k')
-    plt.title("PCA-transformed Data Scatter Plot")
-    plt.xlabel("PCA Component 1")
-    plt.ylabel("PCA Component 2")
-    plt.savefig("pca_scatter_plot.png", dpi=300)
-    plt.close()
-    print("Scatter plot of PCA-transformed data saved as pca_scatter_plot.png")
+    # Calculate probability densities for all data points
+    probabilities = np.exp(gmm.score_samples(X))
 
-    # Step 7: Create grid for density visualization
+
+    # Print (x, y, p) for all points
+    print("Data points and their probabilities:")
+    for i in range(len(X_pca)):
+        x, y = X_pca[i]
+        p = probabilities[i]
+        print(f"Point {i}: (x={x:.2f}, y={y:.2f}, p={p:.5f}),filename = {df['filename'].iloc[i]}")
+        if filename_print in df['filename'].iloc[i]:
+            point_pca = X_pca[i]
+            probability_density = p
+
+    # Plotting the density surface
     x = np.linspace(X_pca[:, 0].min() - 1, X_pca[:, 0].max() + 1, 150)
     y = np.linspace(X_pca[:, 1].min() - 1, X_pca[:, 1].max() + 1, 150)
     X_grid, Y_grid = np.meshgrid(x, y)
     XY_grid = np.array([X_grid.ravel(), Y_grid.ravel()]).T
-
-    # Step 8: Transform the 2D grid back to the original high-dimensional space for GMM scoring
     XY_grid_high_dim = pca.inverse_transform(XY_grid)
-
-    # Step 9: Calculate GMM density on the original high-dimensional space, then reshape it for the 2D grid
     Z = np.exp(gmm.score_samples(XY_grid_high_dim)).reshape(X_grid.shape)
 
-    # Step 10: Plotting the 2D density plot
-    fig, ax = plt.subplots(figsize=(10, 8))
-    contour = ax.contourf(X_grid, Y_grid, Z, levels=30, cmap='viridis')
-    plt.colorbar(contour, ax=ax, label='Probability Density')
-    ax.set_title('2D Density Visualization of GMM after PCA')
-    ax.set_xlabel('PCA Component 1')
-    ax.set_ylabel('PCA Component 2')
-    plt.savefig("correct_density_plot_2D.png", dpi=300)
-    plt.close(fig)
-    print("2D density plot saved as correct_density_plot_2D.png")
-
-    # Step 11: Plotting the 3D density plot
-    fig = plt.figure(figsize=(12, 8))
+    fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
-    ax.plot_surface(X_grid, Y_grid, Z, cmap='viridis', edgecolor='none')
+    surface = ax.plot_surface(X_grid, Y_grid, Z, cmap='viridis', edgecolor='none', alpha=0.8)
+
+    ax.contourf(X_grid, Y_grid, Z, zdir='z', offset=-4, cmap='viridis', alpha=0.9)
+
+    mark_point_on_3d_plot(ax, point_pca[0], point_pca[1], probability_density)  #
+
+    ax.w_xaxis.line.set_color((1.0, 1.0, 1.0, 0))
+    ax.w_yaxis.line.set_color((1.0, 1.0, 1.0, 0))
+    ax.w_zaxis.line.set_color((1.0, 1.0, 1.0, 0))
+
+    ax.grid(False)
+    ax.set_facecolor((1.0, 1.0, 1.0, 0))
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
+    ax.w_xaxis.line.set_color('black')
+    ax.w_yaxis.line.set_color('black')
+    ax.w_zaxis.line.set_color('black')
     ax.set_title("3D Density Surface of GMM after PCA")
-    ax.set_xlabel("PCA Component 1")
-    ax.set_ylabel("PCA Component 2")
+    ax.set_xlabel("PCA x")
+    ax.set_ylabel("PCA y")
     ax.set_zlabel("Probability Density")
 
-    # Optional: Adjust viewing angle for better visualization
-    ax.view_init(elev=30, azim=130)
-
-    plt.savefig("correct_density_plot_3D.png", dpi=300)
+    ax.set_zlim(-4, Z.max() + 0.5)
+    ax.view_init(elev=10, azim=140)
+    fig.colorbar(surface, ax=ax, shrink=0.5, aspect=10)
+    plt.tight_layout()
+    plt.savefig("correct_density_plot_3D_with_texture.png", dpi=300)
+    plt.show()
     plt.close(fig)
-    print("3D density plot saved as correct_density_plot_3D.png")
+
+    print("3D density plot with texture saved as correct_density_plot_3D_with_texture.png")
+
+
+def mark_point_on_3d_plot(ax, x, y, z):
+    """
+    Mark a point on the 3D plot and annotate its z-axis value (p=z) with an angled line.
+
+    Parameters:
+    - ax: Matplotlib 3D axis object.
+    - x, y,z: Coordinates of the point to be marked.
+    """
+    ax.scatter(x, y, z, color='r', s=50)
+    ax.scatter(x, y, -3, color='r', s=50)
+    ax.plot([x, x], [y, y], [-3, z], color='r', linestyle='--')
+
+    # Draw an angled line for annotation
+    x_offset = x - 2  # Slightly offset the x coordinate for the annotation line
+    y_offset = y - 2  # Slightly offset the y coordinate for the annotation line
+    z_offset = z + 3  # Slightly offset the z coordinate for better visibility
+    ax.plot([x, x_offset], [y, y_offset], [z, z_offset], color='red', linestyle='--', linewidth=2)
+
+    # Annotate the point with the z value
+    ax.text(x_offset, y_offset, z_offset+0.5, f'p = {z:.3f}', color='black', fontsize=15, ha='center')
+
 
 # Example usage
-# Assuming df is your input DataFrame
-# train_and_plot_gmm_with_correct_order_and_scatter(df)
-
-
-
-# Example usage
-
-
 if __name__ == "__main__":
-    base_folder_path = "../data/save"  # Path to the base folder containing subdirectories with JSON files
+    base_folder_path = "../data"  # Path to the base folder containing subdirectories with JSON files
+    filename_print = "/213/time_record/gid:2_sid:2.json"
 
-    # Gather data from all relevant JSON files
     df = gather_data(base_folder_path)
-
-    # Train GMM model and save final 2D and 3D plots
-    train_and_plot_gmm_with_correct_order_and_scatter(df)
+    train_and_plot_gmm_with_correct_order_and_scatter(df,filename_print)
